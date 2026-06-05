@@ -1,0 +1,45 @@
+{
+  "device": {
+    "name": "Microsoft PC-joystick driver",
+    "vid": "0x07B5",
+    "pid": "0x0317",
+    "joy_id": 0
+  },
+  "generated": "2026-06-05",
+  "samples": 524,
+  "vjoy_target": 1,
+  "correction": {
+    "X": {
+      "type": "stick",
+      "center_offset": -0.368449,
+      "deadzone": 0.0168,
+      "scale_pos": 1.5834,
+      "scale_neg": 0.7308,
+      "invert": false
+    },
+    "Y": {
+      "type": "stick",
+      "center_offset": 0.022201,
+      "deadzone": 0.0194,
+      "scale_pos": 0.9783,
+      "scale_neg": 1.0227,
+      "invert": false
+    },
+    "Z": {
+      "type": "throttle",
+      "center_offset": 0.0,
+      "deadzone": 0.0,
+      "scale_pos": 1.0,
+      "scale_neg": 1.0,
+      "invert": false
+    },
+    "R": {
+      "type": "stick",
+      "center_offset": 0.0,
+      "deadzone": 0.005,
+      "scale_pos": 1.0,
+      "scale_neg": 1.0,
+      "invert": false
+    }
+  }
+}
