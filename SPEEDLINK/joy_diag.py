@@ -13,7 +13,7 @@ Speedlink Black Widow SL-6640 (VID 0x07B5 / PID 0x0317) и любые други
   - ДИАГНОСТИКА ЖЕЛЕЗА «почему уводит»:
         * Тест дрожания (60с);
         * Тест переподключения (метка порта + лог + рекомендация оптимального USB-порта);
-        * Замер дрожания по USB-порту (настраиваемая длительность, все 6 осей,
+        * Замер дрожания по USB-порту (60с, все 6 осей,
           лог port_jitter_log.csv + рекомендация самого тихого порта);
         * Калибровка Windows (чтение реестра);
         * Сброс калибровки Windows (удаление ветки HKCU).
@@ -790,10 +790,7 @@ class ReconnectTest:
 
         # длительный замер дрожания по порту (все оси)
         jr = ttk.Frame(frame); jr.pack(fill="x", padx=4, pady=(0, 4))
-        ttk.Label(jr, text="Дрожание, сек:").pack(side="left")
-        self.jit_secs_var = tk.StringVar(value=str(PORT_JITTER_SECS))
-        ttk.Entry(jr, textvariable=self.jit_secs_var, width=6).pack(side="left", padx=4)
-        ttk.Button(jr, text="Замер дрожания (все 6 осей)",
+        ttk.Button(jr, text=f"Замер дрожания ({PORT_JITTER_SECS}с, все оси)",
                    command=self.take_jitter).pack(side="left", padx=3)
         ttk.Button(jr, text="Рекомендация по дрожанию",
                    command=self.recommend_jitter).pack(side="left", padx=3)
@@ -864,12 +861,7 @@ class ReconnectTest:
         if self.app.busy:
             mbox.showinfo("Занято", "Идёт другой замер.")
             return
-        try:
-            secs = float(self.jit_secs_var.get().replace(",", "."))
-        except ValueError:
-            secs = PORT_JITTER_SECS
-        if secs <= 0:
-            secs = PORT_JITTER_SECS
+        secs = PORT_JITTER_SECS
         port = self.port_var.get().strip()
         if not port:
             if not mbox.askyesno("Метка порта пустая", "Снять замер дрожания без метки порта?"):
