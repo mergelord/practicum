@@ -227,7 +227,7 @@ Write-Line ""
 Write-Line "Matched keys: $($keyMatches.Count)"
 foreach ($entry in ($keyMatches.Values | Sort-Object Path)) {
     $mark = if ($entry.Protected) { " [ENUM/PROTECTED]" } else { "" }
-    Write-Line "KEY$mark: $($entry.Path)"
+    Write-Line ("KEY{0}: {1}" -f $mark, $entry.Path)
     foreach ($reason in $entry.Reasons) { Write-Line "  - $reason" }
 }
 
@@ -235,7 +235,7 @@ Write-Line ""
 Write-Line "Matched values: $($valueMatches.Count)"
 foreach ($entry in ($valueMatches | Sort-Object Path, Name)) {
     $mark = if ($entry.Protected) { " [ENUM/PROTECTED]" } else { "" }
-    Write-Line "VALUE$mark: $($entry.Path) :: $($entry.Name) = $($entry.Value)"
+    Write-Line ("VALUE{0}: {1} :: {2} = {3}" -f $mark, $entry.Path, $entry.Name, $entry.Value)
 }
 
 if (-not $Apply) {
