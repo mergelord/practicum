@@ -23,3 +23,14 @@ go.work.sum
 
 # env file
 .env
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# SPEEDLINK generated diagnostics/logs
+SPEEDLINK/*.log
+SPEEDLINK/*_log.csv
+SPEEDLINK/*_summary.txt
+SPEEDLINK/joydiag_rest.csv
