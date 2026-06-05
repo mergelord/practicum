@@ -47,7 +47,7 @@ if ($Off) {
 
 if (!$DevicePath) {
     if ($VidPid) {
-        Write-Host "DevicePath was not provided. Devices containing $VidPid:"
+        Write-Host ("DevicePath was not provided. Devices containing {0}:" -f $VidPid)
         & $cli --dev-list | Select-String -Pattern $VidPid -Context 0,2
     } else {
         Write-Host "DevicePath was not provided. Full HidHide device list:"
