@@ -13,6 +13,8 @@ Speedlink Black Widow SL-6640 (VID 0x07B5 / PID 0x0317) и любые други
   - ДИАГНОСТИКА ЖЕЛЕЗА «почему уводит»:
         * Тест дрожания (60с);
         * Тест переподключения (метка порта + лог + рекомендация оптимального USB-порта);
+        * Замер дрожания по USB-порту (настраиваемая длительность, все 6 осей,
+          лог port_jitter_log.csv + рекомендация самого тихого порта);
         * Калибровка Windows (чтение реестра);
         * Сброс калибровки Windows (удаление ветки HKCU).
 
@@ -55,6 +57,7 @@ REST_SECONDS = 8
 EDGE_SECONDS = 12
 JITTER_SECONDS = 60
 RECONNECT_SECS = 1.5
+PORT_JITTER_SECS = 60   # длительность замера дрожания по порту по умолчанию
 
 VMIN, VMAX = 1, 32768   # диапазон оси vJoy
 
@@ -320,7 +323,7 @@ class JoyDiagApp:
     def __init__(self, root):
         self.root = root
         root.title("JoyDiag 2.0 — диагностика и коррекция осей")
-        root.geometry("980x820")
+        root.geometry("980x860")
 
         self.devices = []          # [(joy_id, caps)]
         self.joy_id = None
@@ -758,13 +761,19 @@ class JoyDiagApp:
 # -------------------------------------------- тест переподключения / порты ---
 
 class ReconnectTest:
-    """Тест переподключения с привязкой к USB-порту, логом и рекомендацией."""
+    """Тест переподключения с привязкой к USB-порту, логом и рекомендацией.
+
+    Дополнительно: длительный замер дрожания по порту (все 6 осей) с записью
+    в port_jitter_log.csv и рекомендацией самого тихого порта.
+    """
 
     def __init__(self, parent, app):
         self.app = app
         self.rounds = []
-        self.log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                     "port_center_log.csv")
+        self.jitter_rounds = []
+        base = os.path.dirname(os.path.abspath(__file__))
+        self.log_path = os.path.join(base, "port_center_log.csv")
+        self.jitter_log_path = os.path.join(base, "port_jitter_log.csv")
         self._build(parent)
 
     def _build(self, parent):
@@ -778,6 +787,17 @@ class ReconnectTest:
         ttk.Button(top, text="Снять раунд", command=self.take_round).pack(side="left", padx=3)
         ttk.Button(top, text="Сброс таблицы", command=self.clear).pack(side="left", padx=3)
         ttk.Button(top, text="Рекомендация", command=self.recommend).pack(side="left", padx=3)
+
+        # длительный замер дрожания по порту (все оси)
+        jr = ttk.Frame(frame); jr.pack(fill="x", padx=4, pady=(0, 4))
+        ttk.Label(jr, text="Дрожание, сек:").pack(side="left")
+        self.jit_secs_var = tk.StringVar(value=str(PORT_JITTER_SECS))
+        ttk.Entry(jr, textvariable=self.jit_secs_var, width=6).pack(side="left", padx=4)
+        ttk.Button(jr, text="Замер дрожания (все 6 осей)",
+                   command=self.take_jitter).pack(side="left", padx=3)
+        ttk.Button(jr, text="Рекомендация по дрожанию",
+                   command=self.recommend_jitter).pack(side="left", padx=3)
+        ttk.Label(jr, text="(лог → port_jitter_log.csv)", foreground="#777").pack(side="left", padx=6)
 
         cols = ("n", "port", "cx", "cy", "sx", "sy", "drift", "ts")
         heads = ("№", "Метка порта", "центр X", "центр Y", "σ X", "σ Y", "max|увод|", "время")
@@ -834,6 +854,97 @@ class ReconnectTest:
             w.writerow([row["ts"], row["n"], row["port"],
                         f"{row['cx']:.6f}", f"{row['cy']:.6f}",
                         f"{row['sx']:.6f}", f"{row['sy']:.6f}", f"{row['drift']:.6f}"])
+
+    # ----------------------------------------- длительный замер дрожания -----
+
+    def take_jitter(self):
+        if self.app.joy_id is None:
+            mbox.showwarning("Нет устройства", "Сначала выбери манипулятор и обнови список.")
+            return
+        if self.app.busy:
+            mbox.showinfo("Занято", "Идёт другой замер.")
+            return
+        try:
+            secs = float(self.jit_secs_var.get().replace(",", "."))
+        except ValueError:
+            secs = PORT_JITTER_SECS
+        if secs <= 0:
+            secs = PORT_JITTER_SECS
+        port = self.port_var.get().strip()
+        if not port:
+            if not mbox.askyesno("Метка порта пустая", "Снять замер дрожания без метки порта?"):
+                return
+            port = f"(порт #{len(self.jitter_rounds) + 1})"
+
+        self.app.busy = True
+        self.app._logln(f"Замер дрожания [{port}] {secs:.0f}с (все 6 осей) — НЕ трогай ручку…")
+        self.app._run_async(
+            lambda: self.app.sample_rest(secs, SAMPLE_HZ, axes=AXES),
+            lambda data, p=port, s=secs: self._on_jitter(p, s, data))
+
+    def _on_jitter(self, port, secs, data):
+        self.app.busy = False
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        per = {ax: axis_stats(data.get(ax, [])) for ax in AXES}
+        row = dict(ts=ts, port=port, secs=secs, per=per)
+        self.jitter_rounds.append(row)
+        self._log_jitter_row(row)
+        worst = max(AXES, key=lambda a: per[a]["sd"])
+        lines = [f"Дрожание [{port}] {secs:.0f}с (все оси):"]
+        for ax in AXES:
+            st = per[ax]
+            lines.append(f"  {ax}: σ={st['sd']:.4f}  p2p={st['spread']:.4f}  "
+                         f"drift={st['drift']:+.4f}  center={st['mean']:+.4f}")
+        lines.append(f"Худшая ось по шуму: {worst} (σ={per[worst]['sd']:.4f})")
+        self.app._logln("\n".join(lines))
+        mbox.showinfo("Замер дрожания", "\n".join(lines))
+
+    def _log_jitter_row(self, row):
+        new = not os.path.exists(self.jitter_log_path)
+        with open(self.jitter_log_path, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            if new:
+                head = ["timestamp", "port_label", "duration_s"]
+                for ax in AXES:
+                    head += [f"center_{ax}", f"sigma_{ax}", f"p2p_{ax}", f"drift_{ax}"]
+                w.writerow(head)
+            vals = [row["ts"], row["port"], f"{row['secs']:.1f}"]
+            for ax in AXES:
+                st = row["per"][ax]
+                vals += [f"{st['mean']:.6f}", f"{st['sd']:.6f}",
+                         f"{st['spread']:.6f}", f"{st['drift']:.6f}"]
+            w.writerow(vals)
+
+    def recommend_jitter(self):
+        if len(self.jitter_rounds) < 2:
+            mbox.showinfo("Рекомендация по дрожанию",
+                          "Сними замеры дрожания хотя бы на 2 портах.")
+            return
+        by_port = {}
+        for r in self.jitter_rounds:
+            by_port.setdefault(r["port"], []).append(r)
+        scored = []
+        for port, rs in by_port.items():
+            sigmas, p2ps = [], []
+            for r in rs:
+                for ax in AXES:
+                    sigmas.append(r["per"][ax]["sd"])
+                    p2ps.append(r["per"][ax]["spread"])
+            mean_sigma = sum(sigmas) / len(sigmas)
+            mean_p2p = sum(p2ps) / len(p2ps)
+            scored.append((mean_sigma + mean_p2p, port, mean_sigma, mean_p2p, len(rs)))
+        scored.sort()
+        lines = ["Рейтинг портов по дрожанию (меньше = тише):", ""]
+        for i, (score, port, ms, mp, n) in enumerate(scored, 1):
+            mark = "   ← САМЫЙ ТИХИЙ" if i == 1 else ""
+            lines.append(f"{i}. {port}{mark}")
+            lines.append(f"     ср.σ={ms:.4f}  ср.p2p={mp:.4f}  (замеров: {n})")
+        lines += ["", "Учитывались все 6 осей (σ + размах p2p)."]
+        mbox.showinfo("Рекомендация по дрожанию", "\n".join(lines))
+        self.app._logln("\n".join(lines))
+        with open(self.jitter_log_path.replace(".csv", "_summary.txt"), "a", encoding="utf-8") as f:
+            f.write(f"\n=== Дрожание {datetime.datetime.now():%Y-%m-%d %H:%M:%S} ===\n")
+            f.write("\n".join(lines) + "\n")
 
     def clear(self):
         if self.rounds and not mbox.askyesno("Сброс", "Очистить таблицу? (лог-файл останется)"):
