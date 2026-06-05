@@ -3,30 +3,35 @@
     Find and optionally remove Windows registry entries related to a USB game controller VID/PID.
 
 .DESCRIPTION
-    Guarded cleanup tool for cases where Windows keeps stale registry state for a device.
+    Guarded cleanup tool for stale Windows registry state for a USB game controller.
 
     Default target is Speedlink Black Widow SL-6640 VID_07B5&PID_0317, but another VID/PID can be passed.
 
-    Safety rules:
+    Safety/performance rules:
       - scan-only by default;
       - deletion requires -Apply;
       - registry backup is created before deletion unless -NoBackup is passed;
       - HKLM writes require elevated PowerShell;
+      - default scan is targeted and fast: Joystick/DirectInput branches only;
+      - HKCU/HKLM Software is NOT scanned unless -IncludeSoftware is passed;
       - low-level Enum branches are NOT scanned/deleted unless -IncludeEnum is passed;
       - default matching uses the full VID_XXXX&PID_YYYY pair, not VID-only/PID-only.
 
 .EXAMPLES
-    # Scan only
+    # Fast scan only
     powershell -ExecutionPolicy Bypass -File .\cleanup_device_registry.ps1
 
-    # Scan and write report
+    # Fast scan and write report
     powershell -ExecutionPolicy Bypass -File .\cleanup_device_registry.ps1 -ReportPath .\registry_cleanup_report.txt
 
-    # Delete matched non-Enum keys/values after backup
+    # Delete matched Joystick/DirectInput keys/values after backup
     powershell -ExecutionPolicy Bypass -File .\cleanup_device_registry.ps1 -Apply
 
-    # Include low-level Enum branches too (advanced; run as Administrator)
+    # Include low-level device Enum branches too (advanced; run as Administrator)
     powershell -ExecutionPolicy Bypass -File .\cleanup_device_registry.ps1 -Apply -IncludeEnum
+
+    # Deep Software scan can be slow; use only if the targeted scan is not enough
+    powershell -ExecutionPolicy Bypass -File .\cleanup_device_registry.ps1 -IncludeSoftware
 #>
 
 param(
@@ -35,6 +40,7 @@ param(
     [string]$ProductId = "0317",
     [switch]$Apply,
     [switch]$IncludeEnum,
+    [switch]$IncludeSoftware,
     [switch]$NoBackup,
     [switch]$BroadMatch,
     [string]$BackupDir = (Join-Path $PSScriptRoot "registry_backups"),
@@ -196,17 +202,20 @@ if ($ReportPath) {
 Write-Line "Registry cleanup target: $VidPid"
 Write-Line ("Mode: " + $(if ($Apply) { "APPLY (delete)" } else { "SCAN ONLY" }))
 Write-Line "Include Enum branches: $IncludeEnum"
+Write-Line "Include Software branches: $IncludeSoftware"
 Write-Line "Broad match: $BroadMatch"
 Write-Line "Backup enabled: $(-not $NoBackup)"
 Write-Line ""
 
+$keyMatches = @{}
+$valueMatches = New-Object System.Collections.Generic.List[object]
+
+# Fast targeted scan. These branches are the usual Windows joystick calibration/OEM locations.
 $roots = @(
     "Registry::HKEY_CURRENT_USER\System\CurrentControlSet\Control\MediaProperties\PrivateProperties\Joystick",
     "Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\MediaProperties\PrivateProperties\Joystick",
     "Registry::HKEY_CURRENT_USER\System\CurrentControlSet\Control\MediaProperties\PrivateProperties\DirectInput",
-    "Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\MediaProperties\PrivateProperties\DirectInput",
-    "Registry::HKEY_CURRENT_USER\Software",
-    "Registry::HKEY_LOCAL_MACHINE\SOFTWARE"
+    "Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\MediaProperties\PrivateProperties\DirectInput"
 )
 
 if ($IncludeEnum) {
@@ -216,8 +225,13 @@ if ($IncludeEnum) {
     )
 }
 
-$keyMatches = @{}
-$valueMatches = New-Object System.Collections.Generic.List[object]
+if ($IncludeSoftware) {
+    Write-Line "WARNING: -IncludeSoftware can be slow because HKCU/HKLM Software may contain thousands of keys."
+    $roots += @(
+        "Registry::HKEY_CURRENT_USER\Software",
+        "Registry::HKEY_LOCAL_MACHINE\SOFTWARE"
+    )
+}
 
 foreach ($root in $roots) {
     Write-Line "Scanning: $root"
@@ -243,6 +257,7 @@ if (-not $Apply) {
     Write-Line ""
     Write-Line "Scan only. Nothing was deleted. Re-run with -Apply to delete matched non-Enum keys and matched values."
     Write-Line "Use -IncludeEnum only if you intentionally want to include low-level device enumeration branches."
+    Write-Line "Use -IncludeSoftware only for a slow deep scan of HKCU/HKLM Software."
     Write-Line "Use -BroadMatch only if full VID/PID matching did not find everything you expect."
     exit 0
 }
