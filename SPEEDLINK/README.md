@@ -8,7 +8,7 @@
 
 | Файл | Назначение |
 | --- | --- |
-| `joy_diag.py` | GUI-диагностика через `winmm`: оси, кнопки, POV, VID/PID, покой, края, дрожание, USB-порты, Windows-калибровка. |
+| `joy_diag.py` | GUI-диагностика через `winmm`: оси, кнопки, POV, VID/PID, покой, края, дрожание, USB-порты, Windows-калибровка. Формулы берёт из `joy_core.py`. |
 | `joy_core.py` | Чистая математика коррекции: статистика, deadzone, scale, edge-remap, vJoy range, проверка автоцентра. Покрыто тестами. |
 | `vjoy_feeder.py` | Боевой фоновый модуль `winmm -> correction -> vJoy`, с автоцентровкой и переподключением. |
 | `joydiag_profile_final.json` | Текущий профиль коррекции для Speedlink Black Widow. |
