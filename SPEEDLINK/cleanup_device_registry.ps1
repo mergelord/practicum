@@ -31,7 +31,8 @@
 
 param(
     [string]$Vid = "07B5",
-    [string]$Pid = "0317",
+    [Alias("Pid")]
+    [string]$ProductId = "0317",
     [switch]$Apply,
     [switch]$IncludeEnum,
     [switch]$NoBackup,
@@ -43,12 +44,12 @@ param(
 $ErrorActionPreference = "Stop"
 
 $Vid = $Vid.Trim().ToUpper().Replace("0X", "")
-$Pid = $Pid.Trim().ToUpper().Replace("0X", "")
-$VidPid = "VID_${Vid}&PID_${Pid}"
+$ProductId = $ProductId.Trim().ToUpper().Replace("0X", "")
+$VidPid = "VID_${Vid}&PID_${ProductId}"
 $Needles = @($VidPid)
 if ($BroadMatch) {
     # Advanced mode: may match other devices from the same vendor/product family.
-    $Needles += @("VID_${Vid}", "PID_${Pid}")
+    $Needles += @("VID_${Vid}", "PID_${ProductId}")
 }
 
 function Write-Line {
