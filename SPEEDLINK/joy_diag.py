@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """JoyDiag — GUI диагностики джойстика и подготовки профиля коррекции.
 
-Windows-only диагностический модуль для Speedlink Black Widow SL-6640 и других
-winmm-совместимых манипуляторов. Математика коррекции вынесена в joy_core.py,
-чтобы joy_diag.py и vjoy_feeder.py использовали одну и ту же формулу.
+Windows-only диагностический модуль для winmm-совместимых манипуляторов.
+Математика коррекции вынесена в joy_core.py, чтобы joy_diag.py и
+vjoy_feeder.py использовали одну и ту же формулу.
 """
 
 from __future__ import annotations
@@ -55,9 +55,6 @@ EDGE_SECONDS = 12
 JITTER_SECONDS = 60
 RECONNECT_SECS = 1.5
 PORT_JITTER_SECS = 60
-
-DEFAULT_VID = 0x07B5
-DEFAULT_PID = 0x0317
 
 VJOY_AXIS_MAP = {"X": "X", "Y": "Y", "Z": "Z", "R": "RX", "U": "RY", "V": "RZ"}
 
@@ -269,7 +266,7 @@ def delete_windows_calibration(vid: int, pid: int, include_hklm: bool = False):
 class JoyDiagApp:
     def __init__(self, root: tk.Tk):
         self.root = root
-        root.title("JoyDiag 2.1 — диагностика и коррекция осей")
+        root.title("JoyDiag 2.2 — диагностика и коррекция осей")
         root.geometry("980x860")
 
         self.devices: list[tuple[int, JOYCAPS]] = []
@@ -373,10 +370,10 @@ class JoyDiagApp:
             f"осей {self.caps.wNumAxes} · кнопок {self.caps.wNumButtons} · POV {'есть' if self.caps.wCaps else 'нет'}"
         )
 
-    def current_vidpid(self) -> tuple[int, int]:
+    def current_vidpid(self) -> tuple[int, int] | None:
         if self.caps is not None:
             return device_vidpid(self.caps)
-        return DEFAULT_VID, DEFAULT_PID
+        return None
 
     def _guard(self) -> bool:
         if self.joy_id is None or self.caps is None:
@@ -473,7 +470,11 @@ class JoyDiagApp:
         if winreg is None:
             mbox.showerror("Реестр", "Модуль winreg недоступен (не Windows?).")
             return
-        vid, pid = self.current_vidpid()
+        vidpid = self.current_vidpid()
+        if vidpid is None:
+            mbox.showwarning("Нет устройства", "Сначала выбери манипулятор.")
+            return
+        vid, pid = vidpid
         found = [item for item in find_windows_calibration(vid, pid) if item["status"] == "ЕСТЬ"]
         if not found:
             mbox.showinfo("Калибровка Windows", f"Сохранённой калибровки Windows для VID_{vid:04X}&PID_{pid:04X} не найдено.")
@@ -493,7 +494,11 @@ class JoyDiagApp:
         if winreg is None:
             mbox.showerror("Реестр", "Модуль winreg недоступен (не Windows?).")
             return
-        vid, pid = self.current_vidpid()
+        vidpid = self.current_vidpid()
+        if vidpid is None:
+            mbox.showwarning("Нет устройства", "Сначала выбери манипулятор.")
+            return
+        vid, pid = vidpid
         found = [item for item in find_windows_calibration(vid, pid) if item["status"] == "ЕСТЬ"]
         if not found:
             mbox.showinfo("Сброс калибровки", "Сохранённой калибровки Windows нет — сбрасывать нечего.")
@@ -512,7 +517,8 @@ class JoyDiagApp:
         self._logln("Сброс калибровки Windows:\n" + msg)
 
     def _build_profile(self) -> dict:
-        vid, pid = self.current_vidpid()
+        vidpid = self.current_vidpid()
+        vid, pid = vidpid if vidpid is not None else (None, None)
         corrections = {}
         for axis in AXES:
             corr = dict(self.correction.get(axis, autogen_correction(self.last_rest.get(axis, axis_stats([])))))
@@ -520,7 +526,12 @@ class JoyDiagApp:
                 corr["calibrated_min"], corr["calibrated_max"] = self.ranges[axis]
             corrections[axis] = corr
         return {
-            "device": {"name": device_name(self.caps) if self.caps else "", "vid": f"0x{vid:04X}", "pid": f"0x{pid:04X}", "joy_id": self.joy_id},
+            "device": {
+                "name": device_name(self.caps) if self.caps else "",
+                "vid": f"0x{vid:04X}" if vid is not None else None,
+                "pid": f"0x{pid:04X}" if pid is not None else None,
+                "joy_id": self.joy_id,
+            },
             "generated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "vjoy_target": self.vjoy_target,
             "correction": corrections,

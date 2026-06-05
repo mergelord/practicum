@@ -2,7 +2,7 @@ param(
     [string]$DevicePath,
     [switch]$List,
     [switch]$Off,
-    [string]$VidPid = "VID_07B5&PID_0317"
+    [string]$VidPid = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -41,14 +41,19 @@ Require-Admin
 
 if ($Off) {
     & $cli --cloak-off
-    Write-Host "HidHide cloak disabled. Physical joystick is visible again."
+    Write-Host "HidHide cloak disabled. Physical controller is visible again."
     exit $LASTEXITCODE
 }
 
 if (!$DevicePath) {
-    Write-Host "DevicePath was not provided. Devices containing $VidPid:"
-    & $cli --dev-list | Select-String -Pattern $VidPid -Context 0,2
-    throw "Pass -DevicePath with the exact HID device path, or use -List to inspect devices."
+    if ($VidPid) {
+        Write-Host "DevicePath was not provided. Devices containing $VidPid:"
+        & $cli --dev-list | Select-String -Pattern $VidPid -Context 0,2
+    } else {
+        Write-Host "DevicePath was not provided. Full HidHide device list:"
+        & $cli --dev-list
+    }
+    throw "Pass -DevicePath with the exact HID device path. Optional: pass -VidPid VID_XXXX&PID_YYYY to filter the list."
 }
 
 $python = (Get-Command python.exe -ErrorAction SilentlyContinue).Source
@@ -59,5 +64,5 @@ if ($pythonw) { & $cli --app-reg $pythonw }
 & $cli --dev-hide $DevicePath
 & $cli --cloak-on
 
-Write-Host "Physical joystick hidden: $DevicePath"
+Write-Host "Physical controller hidden: $DevicePath"
 Write-Host "python/pythonw are whitelisted so vjoy_feeder.py can still read the device."
