@@ -55,6 +55,7 @@ EDGE_SECONDS = 12
 JITTER_SECONDS = 60
 RECONNECT_SECS = 1.5
 PORT_JITTER_SECS = 60
+EDGE_MIN_SPAN = 0.01
 
 VJOY_AXIS_MAP = {"X": "X", "Y": "Y", "Z": "Z", "R": "RX", "U": "RY", "V": "RZ"}
 
@@ -199,22 +200,6 @@ def _enum_values(key):
     return out
 
 
-def _subkeys(hive, path):
-    try:
-        key = winreg.OpenKey(hive, path, 0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY)
-    except FileNotFoundError:
-        return None
-    names, i = [], 0
-    while True:
-        try:
-            names.append(winreg.EnumKey(key, i))
-        except OSError:
-            break
-        i += 1
-    winreg.CloseKey(key)
-    return names
-
-
 def find_windows_calibration(vid: int, pid: int):
     if winreg is None:
         return []
@@ -234,31 +219,19 @@ def find_windows_calibration(vid: int, pid: int):
     return found
 
 
-def _delete_tree(hive, path):
-    subs = _subkeys(hive, path)
-    if subs is None:
-        return False
-    for sub in subs:
-        _delete_tree(hive, f"{path}\\{sub}")
-    winreg.DeleteKeyEx(hive, path, winreg.KEY_WOW64_64KEY, 0)
-    return True
-
-
-def delete_windows_calibration(vid: int, pid: int, include_hklm: bool = False):
-    if winreg is None:
-        return [], ["winreg недоступен"]
-    deleted, errors = [], []
-    hives = _reg_hives() if include_hklm else _reg_hives()[:1]
-    for hive_name, hive in hives:
-        for _, path in _reg_targets(vid, pid):
-            try:
-                if _delete_tree(hive, path):
-                    deleted.append(f"{hive_name}\\{path}")
-            except PermissionError:
-                errors.append(f"{hive_name}\\{path} — нужны права администратора")
-            except FileNotFoundError:
-                pass
-    return deleted, errors
+def windows_calibration_reset_instructions(vid: int, pid: int) -> str:
+    dev = _dev_key(vid, pid)
+    return (
+        "Автоматическое удаление веток реестра отключено, чтобы не повредить OEM-идентификацию устройства "
+        "(например, имя из vendor-драйвера).\n\n"
+        f"Устройство: {dev}\n\n"
+        "Безопасный сброс калибровки Windows:\n"
+        "1. Открой joy.cpl.\n"
+        "2. Выбери физический контроллер.\n"
+        "3. Свойства → Параметры → Сбросить.\n"
+        "4. Переподключи USB.\n\n"
+        "Если нужно восстановить имя/vendor-драйвер: удали устройство в Диспетчере устройств и переустанови драйвер производителя."
+    )
 
 
 # ------------------------------------------------------------------ GUI -----
@@ -266,7 +239,7 @@ def delete_windows_calibration(vid: int, pid: int, include_hklm: bool = False):
 class JoyDiagApp:
     def __init__(self, root: tk.Tk):
         self.root = root
-        root.title("JoyDiag 2.2 — диагностика и коррекция осей")
+        root.title("JoyDiag 2.3 — диагностика и коррекция осей")
         root.geometry("980x860")
 
         self.devices: list[tuple[int, JOYCAPS]] = []
@@ -336,7 +309,7 @@ class JoyDiagApp:
         hr.pack(fill="x", padx=4, pady=3)
         ttk.Button(hr, text=f"Тест дрожания ({JITTER_SECONDS}с)", command=self.jitter_test).pack(side="left", padx=3)
         ttk.Button(hr, text="Калибровка Windows (чтение)", command=self.read_windows_cal).pack(side="left", padx=3)
-        ttk.Button(hr, text="Сбросить калибровку Windows", command=self.reset_windows_cal).pack(side="left", padx=3)
+        ttk.Button(hr, text="Безопасный сброс калибровки Windows", command=self.reset_windows_cal).pack(side="left", padx=3)
 
         self.reconnect = ReconnectTest(self.root, self)
 
@@ -429,16 +402,29 @@ class JoyDiagApp:
 
     def _on_edges(self, data: dict[str, list[float]]) -> None:
         self.busy = False
+        saved: list[str] = []
+        self._logln("Калибровка краёв: подробный отчёт по осям:")
         for axis in AXES:
             vals = data.get(axis, [])
             if not vals:
+                self._logln(f"  {axis}: нет сэмплов → пропущено")
                 continue
             mn, mx = min(vals), max(vals)
-            if (mx - mn) * (VMAX - VMIN) / 2.0 < 8:
+            span = mx - mn
+            if span < EDGE_MIN_SPAN:
+                self._logln(f"  {axis}: min={mn:+.4f} max={mx:+.4f} span={span:.4f} → пропущено (движение меньше {EDGE_MIN_SPAN:.3f})")
                 continue
             self.ranges[axis] = (mn, mx)
-        text = ", ".join(f"{axis}[{lo:+.2f}..{hi:+.2f}]" for axis, (lo, hi) in self.ranges.items())
-        self._logln("Калибровка краёв завершена: " + (text or "(оси не двигали)"))
+            saved.append(axis)
+            self._logln(f"  {axis}: min={mn:+.4f} max={mx:+.4f} span={span:.4f} → сохранено")
+        if saved:
+            text = ", ".join(f"{axis}[{self.ranges[axis][0]:+.2f}..{self.ranges[axis][1]:+.2f}]" for axis in saved)
+            self._logln("Калибровка краёв завершена: " + text)
+        else:
+            self._logln(
+                "Калибровка краёв не сохранила диапазоны. Проверь, что во время 12 секунд двигались raw-значения "
+                "в live preview и что выбрано физическое устройство, а не виртуальное."
+            )
 
     def jitter_test(self) -> None:
         if not self._guard():
@@ -499,22 +485,9 @@ class JoyDiagApp:
             mbox.showwarning("Нет устройства", "Сначала выбери манипулятор.")
             return
         vid, pid = vidpid
-        found = [item for item in find_windows_calibration(vid, pid) if item["status"] == "ЕСТЬ"]
-        if not found:
-            mbox.showinfo("Сброс калибровки", "Сохранённой калибровки Windows нет — сбрасывать нечего.")
-            return
-        paths = "\n".join(f"• {item['hive']}: {item['path']}" for item in found)
-        if not mbox.askyesno("Сбросить калибровку Windows?", "Будут удалены пользовательские ветки калибровки:\n\n" + paths + "\n\nУдалять?"):
-            return
-        deleted, errors = delete_windows_calibration(vid, pid, include_hklm=False)
-        msg = ""
-        if deleted:
-            msg += "Удалено:\n" + "\n".join(deleted)
-        if errors:
-            msg += "\n\nНе удалено:\n" + "\n".join(errors)
-        msg += "\n\nПЕРЕПОДКЛЮЧИ USB, чтобы Windows взяла дефолт."
-        mbox.showinfo("Готово", msg)
-        self._logln("Сброс калибровки Windows:\n" + msg)
+        text = windows_calibration_reset_instructions(vid, pid)
+        mbox.showinfo("Безопасный сброс калибровки Windows", text)
+        self._logln("Безопасный сброс калибровки Windows:\n" + text)
 
     def _build_profile(self) -> dict:
         vidpid = self.current_vidpid()
