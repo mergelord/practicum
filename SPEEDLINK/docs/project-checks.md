@@ -52,32 +52,44 @@ python -m unittest discover -s tests -v
 python -m py_compile joy_core.py joy_diag.py vjoy_feeder.py tests\test_joy_core.py tests\test_vjoy_feeder_config.py
 ```
 
-Что этим подтверждается:
+## Ручные проверки на Windows: правильный порядок
 
-- `joy_core.py` импортируется без Windows-зависимостей;
-- edge calibration через `calibrated_min` / `calibrated_max` участвует в коррекции;
-- `apply_profile_axis(...)` применяет edge-remap до center/deadzone/scale;
-- `to_vjoy(...)` отдаёт значения в диапазоне `1..32768`;
-- runtime auto-center имеет safety-проверки;
-- `vjoy_feeder.py` не содержит жёсткого VID/PID и выбирает устройство из CLI/profile;
-- `joy_diag.py`, `vjoy_feeder.py` и тесты проходят синтаксическую проверку.
-
-## Ручные проверки на Windows
+### 1. Проверка видимости
 
 1. `python joy_diag.py` видит нужный контроллер и показывает его VID/PID.
-2. Live preview показывает X/Y/Z/R и кнопки; corrected-значения считаются через `joy_core.apply_profile_axis`.
-3. `Замерить покой` создаёт разумный профиль с `device.vid` / `device.pid`.
-4. `Калибровка краёв` сохраняет `calibrated_min` / `calibrated_max`, а preview использует их через `joy_core.apply_profile_axis`.
-5. `Калибровка Windows` не показывает старую кривую калибровку после сброса.
-6. `python vjoy_feeder.py --list-devices` показывает winmm-устройства.
-7. `python vjoy_feeder.py` выбирает устройство из `joydiag_profile_final.json`.
-8. `python vjoy_feeder.py joydiag_profile_final.json --joy-id 0` работает с явным winmm id.
-9. `python vjoy_feeder.py joydiag_profile_final.json --vid 0x07B5 --pid 0x0317` работает с явным VID/PID.
-10. Фидер захватывает vJoy и пишет `vjoy_feeder.log`.
-11. В `joy.cpl` vJoy-оси двигаются корректно.
-12. После переподключения USB фидер заново находит контроллер и делает автоцентровку.
-13. После HidHide физический контроллер скрыт от игры, но фидер продолжает его читать.
-14. Автозапуск через Планировщик заданий стартует фидер после входа в Windows.
+2. Live preview показывает оси/кнопки/POV.
+
+### 2. Проверка USB-портов
+
+1. На каждом USB-порте-кандидате сделать по 2–3 коротких раунда **«Снять раунд»**.
+2. Нажать **«Рекомендация»**.
+3. Отобрать стабильные порты по центру/разбросу.
+
+### 3. Проверка дрожания
+
+1. Только на стабильных портах сделать **«Замер дрожания (60с, все оси)»**.
+2. Нажать **«Рекомендация по дрожанию»**.
+3. Выбрать один основной порт или 1–2 лучших порта.
+
+### 4. Замер профиля
+
+На финальном порту:
+
+1. `Замерить покой` создаёт разумный профиль с `device.vid` / `device.pid`.
+2. `Калибровка краёв` сохраняет `calibrated_min` / `calibrated_max`, а preview использует их через `joy_core.apply_profile_axis`.
+3. Сохранить `joydiag_profile_final.json`.
+
+### 5. Проверка фидера
+
+1. `python vjoy_feeder.py --list-devices` показывает winmm-устройства.
+2. `python vjoy_feeder.py` выбирает устройство из `joydiag_profile_final.json`.
+3. `python vjoy_feeder.py joydiag_profile_final.json --joy-id 0` работает с явным winmm id.
+4. `python vjoy_feeder.py joydiag_profile_final.json --vid 0x07B5 --pid 0x0317` работает с явным VID/PID.
+5. Фидер захватывает vJoy и пишет `vjoy_feeder.log`.
+6. В `joy.cpl` vJoy-оси двигаются корректно.
+7. После переподключения USB фидер заново находит контроллер и делает автоцентровку.
+8. После HidHide физический контроллер скрыт от игры, но фидер продолжает его читать.
+9. Автозапуск через Планировщик заданий стартует фидер после входа в Windows.
 
 ## Состояние после профильного рефакторинга
 
@@ -85,6 +97,7 @@ python -m py_compile joy_core.py joy_diag.py vjoy_feeder.py tests\test_joy_core.
 - `joy_diag.py` не имеет fallback на конкретный VID/PID для операций с Windows-калибровкой: нужно выбрать устройство.
 - `setup_hidhide.ps1` больше не имеет дефолтного VID/PID; фильтр задаётся через `-VidPid`, а устройство — через `-DevicePath`.
 - Текущий `joydiag_profile_final.json` остаётся рабочим профилем, но не является ограничением кода.
+- Документация фиксирует порт-first workflow: сначала стабильность портов, потом дрожание, потом покой/края.
 
 ## Решение по платформам
 
