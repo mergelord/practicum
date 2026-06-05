@@ -15,9 +15,10 @@ import json
 import os
 import sys
 import time
+from collections.abc import Mapping
 from ctypes import wintypes
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from joy_core import (
     AXES,
@@ -329,7 +330,7 @@ def sample_autocenter(joy_id: int, caps: JOYCAPS, profile: Mapping[str, Any], se
         info = read_raw(joy_id)
         if info is not None:
             for axis in AXES:
-                corr = correction.get(axis, {})
+                corr = correction.get(axis, {}) if isinstance(correction, Mapping) else {}
                 if isinstance(corr, Mapping) and corr.get("type") == "throttle":
                     continue
                 raw = norm_axis(info, caps, axis)
