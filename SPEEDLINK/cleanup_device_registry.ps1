@@ -3,15 +3,17 @@
     Find and optionally remove Windows registry entries related to a USB game controller VID/PID.
 
 .DESCRIPTION
-    This script is intentionally guarded:
-      - default mode is scan-only;
+    Guarded cleanup tool for cases where Windows keeps stale registry state for a device.
+
+    Default target is Speedlink Black Widow SL-6640 VID_07B5&PID_0317, but another VID/PID can be passed.
+
+    Safety rules:
+      - scan-only by default;
       - deletion requires -Apply;
       - registry backup is created before deletion unless -NoBackup is passed;
       - HKLM writes require elevated PowerShell;
-      - Enum/USB/HID class branches are NOT touched unless -IncludeEnum is passed.
-
-    Default target is Speedlink Black Widow SL-6640 VID_07B5&PID_0317, but the script
-    accepts another VID/PID pair.
+      - low-level Enum branches are NOT scanned/deleted unless -IncludeEnum is passed;
+      - default matching uses the full VID_XXXX&PID_YYYY pair, not VID-only/PID-only.
 
 .EXAMPLES
     # Scan only
@@ -20,7 +22,7 @@
     # Scan and write report
     powershell -ExecutionPolicy Bypass -File .\cleanup_device_registry.ps1 -ReportPath .\registry_cleanup_report.txt
 
-    # Delete matched safe keys/values after backup
+    # Delete matched non-Enum keys/values after backup
     powershell -ExecutionPolicy Bypass -File .\cleanup_device_registry.ps1 -Apply
 
     # Include low-level Enum branches too (advanced; run as Administrator)
@@ -33,6 +35,7 @@ param(
     [switch]$Apply,
     [switch]$IncludeEnum,
     [switch]$NoBackup,
+    [switch]$BroadMatch,
     [string]$BackupDir = (Join-Path $PSScriptRoot "registry_backups"),
     [string]$ReportPath = ""
 )
@@ -42,7 +45,11 @@ $ErrorActionPreference = "Stop"
 $Vid = $Vid.Trim().ToUpper().Replace("0X", "")
 $Pid = $Pid.Trim().ToUpper().Replace("0X", "")
 $VidPid = "VID_${Vid}&PID_${Pid}"
-$Needles = @($VidPid, "VID_${Vid}", "PID_${Pid}")
+$Needles = @($VidPid)
+if ($BroadMatch) {
+    # Advanced mode: may match other devices from the same vendor/product family.
+    $Needles += @("VID_${Vid}", "PID_${Pid}")
+}
 
 function Write-Line {
     param([string]$Text = "")
@@ -62,6 +69,7 @@ function Convert-ToRegExePath {
     param([string]$PsPath)
     $p = $PsPath
     $p = $p -replace '^Microsoft\.PowerShell\.Core\\Registry::', ''
+    $p = $p -replace '^Registry::', ''
     $p = $p -replace '^HKEY_CURRENT_USER', 'HKCU'
     $p = $p -replace '^HKEY_LOCAL_MACHINE', 'HKLM'
     $p = $p -replace '^HKEY_CLASSES_ROOT', 'HKCR'
@@ -88,7 +96,11 @@ function Add-UniqueKey {
         [bool]$Protected = $false
     )
     if (-not $Map.ContainsKey($Path)) {
-        $Map[$Path] = [ordered]@{ Path = $Path; Reasons = New-Object System.Collections.Generic.List[string]; Protected = $Protected }
+        $Map[$Path] = [ordered]@{
+            Path = $Path
+            Reasons = New-Object System.Collections.Generic.List[string]
+            Protected = $Protected
+        }
     }
     $Map[$Path].Reasons.Add($Reason) | Out-Null
     if ($Protected) { $Map[$Path].Protected = $true }
@@ -139,7 +151,15 @@ function Scan-RegistryRoot {
             $item = Get-Item -LiteralPath $path -ErrorAction Stop
             foreach ($name in $item.GetValueNames()) {
                 $value = $item.GetValue($name, $null, 'DoNotExpandEnvironmentNames')
-                $valueText = if ($null -eq $value) { "" } elseif ($value -is [byte[]]) { ([BitConverter]::ToString($value)) } elseif ($value -is [array]) { ($value -join ';') } else { [string]$value }
+                $valueText = if ($null -eq $value) {
+                    ""
+                } elseif ($value -is [byte[]]) {
+                    [BitConverter]::ToString($value)
+                } elseif ($value -is [array]) {
+                    ($value -join ';')
+                } else {
+                    [string]$value
+                }
                 if ((Test-MatchText $name) -or (Test-MatchText $valueText)) {
                     $ValueMatches.Add([ordered]@{ Path = $path; Name = $name; Value = $valueText; Protected = $protected }) | Out-Null
                     if (Test-MatchText $path) {
@@ -148,7 +168,7 @@ function Scan-RegistryRoot {
                 }
             }
         } catch {
-            # Some keys are locked; skip but continue scan.
+            # Some keys are locked; skip values but continue scan.
         }
 
         try {
@@ -162,10 +182,9 @@ function Scan-RegistryRoot {
 }
 
 if ($ReportPath) {
-    $script:ReportPath = (Resolve-Path -Path (Split-Path -Parent $ReportPath) -ErrorAction SilentlyContinue)
-    if (-not $script:ReportPath) {
-        $parent = Split-Path -Parent $ReportPath
-        if ($parent) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+    $parent = Split-Path -Parent $ReportPath
+    if ($parent -and !(Test-Path $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
     }
     $script:ReportPath = $ReportPath
     Set-Content -Path $script:ReportPath -Value "" -Encoding UTF8
@@ -174,8 +193,9 @@ if ($ReportPath) {
 }
 
 Write-Line "Registry cleanup target: $VidPid"
-Write-Line "Mode: " + ($(if ($Apply) { "APPLY (delete)" } else { "SCAN ONLY" }))
+Write-Line ("Mode: " + $(if ($Apply) { "APPLY (delete)" } else { "SCAN ONLY" }))
 Write-Line "Include Enum branches: $IncludeEnum"
+Write-Line "Broad match: $BroadMatch"
 Write-Line "Backup enabled: $(-not $NoBackup)"
 Write-Line ""
 
@@ -191,8 +211,7 @@ $roots = @(
 if ($IncludeEnum) {
     $roots += @(
         "Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Enum\HID",
-        "Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Enum\USB",
-        "Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Enum\USBSTOR"
+        "Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Enum\USB"
     )
 }
 
@@ -221,8 +240,9 @@ foreach ($entry in ($valueMatches | Sort-Object Path, Name)) {
 
 if (-not $Apply) {
     Write-Line ""
-    Write-Line "Scan only. Nothing was deleted. Re-run with -Apply to delete matched non-protected keys and matched values."
+    Write-Line "Scan only. Nothing was deleted. Re-run with -Apply to delete matched non-Enum keys and matched values."
     Write-Line "Use -IncludeEnum only if you intentionally want to include low-level device enumeration branches."
+    Write-Line "Use -BroadMatch only if full VID/PID matching did not find everything you expect."
     exit 0
 }
 
