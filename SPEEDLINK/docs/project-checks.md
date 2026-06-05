@@ -2,7 +2,7 @@
 
 ## Автоматические проверки
 
-Критичная математика вынесена в `joy_core.py` и покрыта unit-тестами:
+Критичная математика вынесена в `joy_core.py`; теперь её использует и `joy_diag.py`, и `vjoy_feeder.py`. Она покрыта unit-тестами:
 
 - статистика покоя и drift;
 - автоопределение `stick` / `throttle`;
@@ -25,7 +25,7 @@ python -m unittest discover -s tests -v
 ## Ручные проверки на Windows
 
 1. `python joy_diag.py` видит Speedlink и показывает VID/PID `07B5/0317`.
-2. Live preview показывает X/Y/Z/R и кнопки.
+2. Live preview показывает X/Y/Z/R и кнопки; corrected-значения считаются через `joy_core.apply_profile_axis`.
 3. `Замерить покой` создаёт разумный профиль.
 4. `Калибровка Windows` не показывает старую кривую калибровку после сброса.
 5. `python vjoy_feeder.py` захватывает vJoy и пишет `vjoy_feeder.log`.
