@@ -200,6 +200,45 @@ def profile_device_ids(profile: Mapping[str, Any]) -> tuple[int | None, int | No
     return vid, pid
 
 
+def hold_threshold(correction: Mapping[str, Any] | None) -> float:
+    """Return per-axis hold/anti-jitter threshold in normalized [-1..1] units.
+
+    `hold_threshold` is the preferred profile key. `jitter_deadband` is kept as
+    an alias because early docs/discussions used both names.
+    """
+    if not isinstance(correction, Mapping):
+        return 0.0
+    raw = correction.get("hold_threshold", correction.get("jitter_deadband", 0.0))
+    try:
+        threshold = float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, threshold)
+
+
+def apply_hold_filter(axis: str, value: float, correction: Mapping[str, Any] | None, hold_state: dict[str, float]) -> float:
+    """Suppress small axis changes by holding the last sent value.
+
+    This is intended for noisy throttle/slider axes: tiny movement below the
+    threshold is treated as potentiometer jitter, while larger accumulated
+    changes still pass through so the throttle remains usable.
+    """
+    threshold = hold_threshold(correction)
+    if threshold <= 0.0:
+        return value
+
+    previous = hold_state.get(axis)
+    if previous is None:
+        hold_state[axis] = value
+        return value
+
+    if abs(value - previous) < threshold:
+        return previous
+
+    hold_state[axis] = value
+    return value
+
+
 def select_device(profile: Mapping[str, Any], *, joy_id: int | None = None, vid: int | None = None, pid: int | None = None) -> tuple[int, JOYCAPS]:
     """Select physical device by explicit joy id, CLI VID/PID, profile VID/PID, or single device fallback."""
     devices = enumerate_devices()
@@ -350,12 +389,21 @@ def sample_autocenter(joy_id: int, caps: JOYCAPS, profile: Mapping[str, Any], se
     return centers
 
 
-def feed_once(vjoy: VJoyDevice, info: JOYINFOEX, caps: JOYCAPS, profile: Mapping[str, Any], runtime_centers: Mapping[str, float]) -> None:
+def feed_once(
+    vjoy: VJoyDevice,
+    info: JOYINFOEX,
+    caps: JOYCAPS,
+    profile: Mapping[str, Any],
+    runtime_centers: Mapping[str, float],
+    hold_state: dict[str, float] | None = None,
+) -> None:
     correction = profile.get("correction", {})
     for axis in AXES:
         corr = correction.get(axis) if isinstance(correction, Mapping) else None
         raw = norm_axis(info, caps, axis)
         fixed = apply_profile_axis(raw, corr if isinstance(corr, Mapping) else None, runtime_center=runtime_centers.get(axis))
+        if hold_state is not None:
+            fixed = apply_hold_filter(axis, fixed, corr if isinstance(corr, Mapping) else None, hold_state)
         vjoy.set_axis(HID_USAGE[axis], to_vjoy(fixed))
 
     max_buttons = min(32, int(caps.wNumButtons))
@@ -396,6 +444,7 @@ def run(args: argparse.Namespace) -> int:
     joy_id_arg = parse_int_auto(args.joy_id)
     delay = 1.0 / float(args.hz)
     runtime_centers: dict[str, float] = {}
+    hold_state: dict[str, float] = {}
     current_id: int | None = None
     current_caps: JOYCAPS | None = None
 
@@ -407,6 +456,7 @@ def run(args: argparse.Namespace) -> int:
                     vid, pid = device_vidpid(current_caps)
                     log(f"physical device: id={current_id} {device_name(current_caps)} VID_{vid:04X}&PID_{pid:04X}")
                     runtime_centers = {}
+                    hold_state = {}
                     if not args.no_autocenter:
                         runtime_centers = sample_autocenter(current_id, current_caps, profile, float(args.autocenter_secs), log)
                 except Exception as exc:
@@ -419,10 +469,11 @@ def run(args: argparse.Namespace) -> int:
                 log("physical device disconnected")
                 current_id = None
                 current_caps = None
+                hold_state = {}
                 time.sleep(RECONNECT_SLEEP)
                 continue
 
-            feed_once(vjoy, info, current_caps, profile, runtime_centers)
+            feed_once(vjoy, info, current_caps, profile, runtime_centers, hold_state)
             time.sleep(delay)
     except KeyboardInterrupt:
         log("stopped by user")

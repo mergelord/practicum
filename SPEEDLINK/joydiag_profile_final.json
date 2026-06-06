@@ -5,7 +5,7 @@
     "pid": "0x0317",
     "joy_id": 0
   },
-  "generated": "2026-06-05",
+  "generated": "2026-06-06",
   "samples": 524,
   "vjoy_target": 1,
   "correction": {
@@ -31,7 +31,8 @@
       "deadzone": 0.0,
       "scale_pos": 1.0,
       "scale_neg": 1.0,
-      "invert": false
+      "invert": false,
+      "hold_threshold": 0.03
     },
     "R": {
       "type": "stick",
