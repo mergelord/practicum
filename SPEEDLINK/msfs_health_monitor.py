@@ -199,11 +199,13 @@ def read_nvidia_metrics() -> dict[str, Any]:
     if len(parts) != 6:
         return {"gpu_available": False, "gpu_error": f"unexpected nvidia-smi output: {line}"}
     name, mem_used_mb, mem_total_mb, util, temp, power = parts
+
     def to_float(text: str) -> float | None:
         try:
             return float(text)
         except ValueError:
             return None
+
     return {
         "gpu_available": True,
         "gpu_name": name,
@@ -468,7 +470,7 @@ class HealthMonitorApp(tk.Tk):
     def _collect_events_worker(self, out_path: Path) -> None:
         try:
             export_event_snapshot(out_path)
-            self.ui_queue.put(("error", f"event snapshot saved: {out_path}"))
+            self.ui_queue.put(("info", f"event snapshot saved: {out_path}"))
         except Exception as exc:
             self.ui_queue.put(("error", f"event snapshot failed: {exc}"))
 
@@ -488,19 +490,20 @@ def fmt(value: Any, suffix: str = "") -> str:
 
 def export_event_snapshot(out_path: Path, hours: int = 8) -> None:
     # Pull recent relevant System/Application events into CSV for later analysis.
-    providers = ",".join([repr(p) for p in WATCH_EVENT_PROVIDERS])
-    script = rf'''
+    provider_array = "@(" + ",".join([repr(p) for p in WATCH_EVENT_PROVIDERS]) + ")"
+    ps_path = json.dumps(str(out_path))
+    script = r'''
 $ErrorActionPreference = 'SilentlyContinue'
-$since = (Get-Date).AddHours(-{int(hours)})
-$providers = @({providers})
+$since = (Get-Date).AddHours(-__HOURS__)
+$providers = __PROVIDERS__
 $events = @()
-foreach ($log in @('System','Application')) {{
-    $events += Get-WinEvent -FilterHashtable @LogName=$log; StartTime=$since |
-        Where-Object  $providers -contains $_.ProviderName -or $_.Id -in @(41,46,51,2004,1000,1001,6008)  |
+foreach ($log in @('System','Application')) {
+    $events += Get-WinEvent -LogName $log -ErrorAction SilentlyContinue |
+        Where-Object { $_.TimeCreated -ge $since -and ($providers -contains $_.ProviderName -or $providers -contains $_.ProviderName.Split('/')[0]) } |
         Select-Object TimeCreated, LogName, ProviderName, Id, LevelDisplayName, Message
-}}
-$events | Sort-Object TimeCreated | Export-Csv -NoTypeInformation -Encoding UTF8 -Path {json.dumps(str(out_path))}
-'''
+}
+$events | Sort-Object TimeCreated | Export-Csv -NoTypeInformation -Encoding UTF8 -Path __OUT_PATH__
+'''.replace("__HOURS__", str(int(hours))).replace("__PROVIDERS__", provider_array).replace("__OUT_PATH__", ps_path)
     args = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script]
     code, out, err = run_command(args, timeout=30.0)
     if code != 0:
