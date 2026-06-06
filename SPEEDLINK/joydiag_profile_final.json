@@ -8,6 +8,14 @@
   "generated": "2026-06-06",
   "samples": 524,
   "vjoy_target": 1,
+  "output_map": {
+    "X": ["X", "Rx"],
+    "Y": ["Y"],
+    "Z": ["Z"],
+    "R": [],
+    "U": [],
+    "V": []
+  },
   "correction": {
     "X": {
       "type": "stick",

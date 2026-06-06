@@ -15,7 +15,7 @@ import json
 import os
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from ctypes import wintypes
 from pathlib import Path
 from typing import Any
@@ -45,6 +45,9 @@ DEFAULT_PAUSE_FILE = "vjoy_feeder.pause"
 SAMPLE_HZ = 100
 RECONNECT_SLEEP = 1.0
 
+# Internal axis names:
+#   X/Y/Z are vJoy X/Y/Z.
+#   R is vJoy Rx, U is vJoy Ry, V is vJoy Rz.
 HID_USAGE = {
     "X": 0x30,
     "Y": 0x31,
@@ -52,6 +55,18 @@ HID_USAGE = {
     "R": 0x33,   # Rx
     "U": 0x34,   # Ry
     "V": 0x35,   # Rz
+}
+
+OUTPUT_AXIS_ALIASES = {
+    "X": "X",
+    "Y": "Y",
+    "Z": "Z",
+    "R": "R",
+    "RX": "R",
+    "U": "U",
+    "RY": "U",
+    "V": "V",
+    "RZ": "V",
 }
 
 
@@ -199,6 +214,71 @@ def profile_device_ids(profile: Mapping[str, Any]) -> tuple[int | None, int | No
     vid = parse_int_auto(device.get("vid"))
     pid = parse_int_auto(device.get("pid"))
     return vid, pid
+
+
+def normalize_output_axis_name(axis: str) -> str:
+    """Normalize profile output axis names to internal vJoy axis names.
+
+    Profiles may use either internal names (R/U/V) or user-facing vJoy names
+    (Rx/Ry/Rz). R means vJoy Rx, U means vJoy Ry, V means vJoy Rz.
+    """
+    key = str(axis).strip().upper()
+    normalized = OUTPUT_AXIS_ALIASES.get(key)
+    if normalized is None:
+        raise ValueError(f"Unknown vJoy output axis '{axis}'. Use X, Y, Z, Rx, Ry, or Rz.")
+    return normalized
+
+
+def output_axis_map(profile: Mapping[str, Any]) -> dict[str, list[str]]:
+    """Return physical-axis -> vJoy-output-axis mapping from profile.
+
+    Default is identity: X->X, Y->Y, Z->Z, R->Rx, U->Ry, V->Rz.
+    A source axis can be duplicated to multiple vJoy axes, for example:
+
+        "output_map": {"X": ["X", "Rx"], "R": []}
+
+    This is useful for no-pedals flight setups where one physical X axis should
+    drive aileron, rudder, and nose-wheel steering while physical twist is ignored.
+    """
+    raw_map = profile.get("output_map")
+    result: dict[str, list[str]] = {}
+    for source_axis in AXES:
+        raw_targets: Any = [source_axis]
+        if isinstance(raw_map, Mapping) and source_axis in raw_map:
+            raw_targets = raw_map[source_axis]
+
+        if raw_targets is None or raw_targets is False:
+            result[source_axis] = []
+            continue
+        if isinstance(raw_targets, str):
+            target_values: Sequence[Any] = [raw_targets]
+        elif isinstance(raw_targets, Sequence):
+            target_values = raw_targets
+        else:
+            raise ValueError(f"output_map.{source_axis} must be a string, array, null, or false")
+
+        targets: list[str] = []
+        for target in target_values:
+            normalized = normalize_output_axis_name(str(target))
+            if normalized not in targets:
+                targets.append(normalized)
+        result[source_axis] = targets
+    return result
+
+
+def apply_output_map(source_outputs: Mapping[str, float], profile: Mapping[str, Any]) -> dict[str, float]:
+    """Map corrected physical-axis values to vJoy output-axis values.
+
+    Unmapped vJoy axes are explicitly centered (0.0), so disabling a source axis
+    does not leave stale vJoy state behind.
+    """
+    mapped = output_axis_map(profile)
+    destination_outputs: dict[str, float] = {axis: 0.0 for axis in AXES}
+    for source_axis in AXES:
+        value = float(source_outputs.get(source_axis, 0.0))
+        for target_axis in mapped[source_axis]:
+            destination_outputs[target_axis] = value
+    return destination_outputs
 
 
 def hold_threshold(correction: Mapping[str, Any] | None) -> float:
@@ -412,31 +492,38 @@ def feed_once(
     hold_state: dict[str, float] | None = None,
 ) -> dict[str, float]:
     correction = profile.get("correction", {})
-    outputs: dict[str, float] = {}
+    source_outputs: dict[str, float] = {}
     for axis in AXES:
         corr = correction.get(axis) if isinstance(correction, Mapping) else None
         raw = norm_axis(info, caps, axis)
         fixed = apply_profile_axis(raw, corr if isinstance(corr, Mapping) else None, runtime_center=runtime_centers.get(axis))
         if hold_state is not None:
             fixed = apply_hold_filter(axis, fixed, corr if isinstance(corr, Mapping) else None, hold_state)
-        outputs[axis] = fixed
-        vjoy.set_axis(HID_USAGE[axis], to_vjoy(fixed))
+        source_outputs[axis] = fixed
+
+    destination_outputs = apply_output_map(source_outputs, profile)
+    for axis in AXES:
+        vjoy.set_axis(HID_USAGE[axis], to_vjoy(destination_outputs[axis]))
 
     max_buttons = min(32, int(caps.wNumButtons))
     for button in range(max_buttons):
         vjoy.set_button(button + 1, bool(info.dwButtons & (1 << button)))
 
     vjoy.set_pov(1, pov_to_vjoy_discrete(info.dwPOV))
-    return outputs
+    return source_outputs
 
 
 def feed_pause_once(vjoy: VJoyDevice, profile: Mapping[str, Any], caps: JOYCAPS | None, last_outputs: Mapping[str, float]) -> None:
     """Send safe vJoy output while physical input is paused."""
     correction = profile.get("correction", {})
+    source_outputs: dict[str, float] = {}
     for axis in AXES:
         corr = correction.get(axis) if isinstance(correction, Mapping) else None
-        value = pause_axis_value(axis, corr if isinstance(corr, Mapping) else None, last_outputs)
-        vjoy.set_axis(HID_USAGE[axis], to_vjoy(value))
+        source_outputs[axis] = pause_axis_value(axis, corr if isinstance(corr, Mapping) else None, last_outputs)
+
+    destination_outputs = apply_output_map(source_outputs, profile)
+    for axis in AXES:
+        vjoy.set_axis(HID_USAGE[axis], to_vjoy(destination_outputs[axis]))
 
     max_buttons = 32 if caps is None else min(32, int(caps.wNumButtons))
     for button in range(max_buttons):
@@ -460,6 +547,8 @@ def run(args: argparse.Namespace) -> int:
     if not profile_path.is_absolute():
         profile_path = Path(__file__).resolve().parent / profile_path
     profile = load_profile(profile_path)
+    # Validate output_map at startup so configuration errors are explicit.
+    output_axis_map(profile)
 
     if args.list_devices:
         print(describe_devices())

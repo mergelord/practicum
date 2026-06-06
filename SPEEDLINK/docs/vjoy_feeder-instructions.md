@@ -131,6 +131,67 @@ Remove-Item C:\SPEEDLINK\NEWVER\vjoy_feeder.pause -ErrorAction SilentlyContinue
 
 Удобнее делать это через `feeder_gui.py`.
 
+## Output map: переназначение физических осей в vJoy
+
+По умолчанию фидер работает как раньше:
+
+```text
+physical X -> vJoy X
+physical Y -> vJoy Y
+physical Z -> vJoy Z
+physical R/twist -> vJoy Rx
+physical U -> vJoy Ry
+physical V -> vJoy Rz
+```
+
+Это можно изменить в профиле через секцию `output_map`.
+
+Пример обычной identity-схемы:
+
+```json
+"output_map": {
+  "X": ["X"],
+  "Y": ["Y"],
+  "Z": ["Z"],
+  "R": ["Rx"],
+  "U": ["Ry"],
+  "V": ["Rz"]
+}
+```
+
+Пример no-pedals / Fenix-схемы, где физическая X одновременно идёт в vJoy X и vJoy Rx, а физический twist/R игнорируется:
+
+```json
+"output_map": {
+  "X": ["X", "Rx"],
+  "Y": ["Y"],
+  "Z": ["Z"],
+  "R": [],
+  "U": [],
+  "V": []
+}
+```
+
+В этой схеме:
+
+```text
+physical X -> vJoy X + vJoy Rx
+physical R/twist -> не отправляется
+vJoy Ry/Rz -> центр
+```
+
+Это удобно, если в MSFS/Fenix нужно повесить одну физическую X-ось сразу на:
+
+```text
+Aileron Axis             = vJoy X
+Rudder Axis              = vJoy X
+Nose Wheel Steering Axis = vJoy Rx или vJoy X
+```
+
+Если Fenix A319 упрямо цепляет `Rx` для nose wheel steering/tiller, он всё равно получит физическую X, потому что `vJoy Rx` теперь копия `vJoy X`.
+
+Важно: при такой схеме любое движение X в полёте одновременно даёт aileron и rudder. Это компромисс для сценария без педалей.
+
 ## Как выбирается физическое устройство
 
 Приоритет выбора:
@@ -161,6 +222,7 @@ Remove-Item C:\SPEEDLINK\NEWVER\vjoy_feeder.pause -ErrorAction SilentlyContinue
 ## Что проверяет фидер
 
 - Загружает и валидирует наличие секции `correction` в профиле.
+- Валидирует `output_map`, если он задан.
 - Выбирает физический контроллер по CLI/profile/single-device fallback.
 - Захватывает vJoy-устройство.
 - При потере физического контроллера ждёт переподключения и заново делает автоцентровку.
@@ -187,7 +249,8 @@ Remove-Item C:\SPEEDLINK\NEWVER\vjoy_feeder.pause -ErrorAction SilentlyContinue
 1. Запусти `python vjoy_feeder.py` или scheduled task `vJoyFeeder`.
 2. Открой `joy.cpl` → vJoy Device.
 3. Проверь:
-   - X/Y/R стоят ровно в центре в покое;
+   - X/Y стоят ровно в центре в покое;
+   - если включён no-pedals `output_map`, то vJoy Rx двигается вместе с X, а не с физическим twist/R;
    - Z/РУД проходит весь диапазон и остаётся там, где оставлен;
    - кнопки и POV пробрасываются.
 4. Только после этого включай HidHide.
@@ -286,3 +349,4 @@ powershell -ExecutionPolicy Bypass -File .\setup_hidhide.ps1 -Off
 | Центр всё равно уводит | Проверить Windows-калибровку, deadzone, механику стика и вибрации стола. |
 | Игра видит два устройства | Включить HidHide и оставить в игре только vJoy. |
 | После HidHide фидер потерял физический джой | Добавить в Applications именно тот Python, которым запущен фидер, особенно `pythonw.exe` для scheduled task. |
+| Fenix цепляет nose wheel steering на Rx | Включить `output_map`: `X -> [X, Rx]`, `R -> []`, затем назначить Nose Wheel Steering на vJoy Rx. |
