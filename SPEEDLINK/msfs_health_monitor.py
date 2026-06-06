@@ -3,7 +3,8 @@
 
 Small Windows-only Tkinter tool for live MSFS/system monitoring during a flight.
 It shows CPU/RAM/commit, NVIDIA GPU/VRAM/temperature, MSFS process memory,
-and writes CSV logs that can be reviewed after the flight.
+MSFS process I/O, total disk I/O, and writes CSV logs that can be reviewed
+after the flight.
 
 Designed for Evgen's SPEEDLINK/MSFS troubleshooting workflow. Uses only the
 Python standard library plus Windows PowerShell and NVIDIA's nvidia-smi when
@@ -54,6 +55,11 @@ CSV_FIELDS = [
     "commit_limit_gb",
     "commit_used_percent",
     "pagefile_gb",
+    "disk_read_mb_s",
+    "disk_write_mb_s",
+    "disk_queue_length",
+    "disk_avg_read_ms",
+    "disk_avg_write_ms",
     "gpu_name",
     "gpu_util_percent",
     "gpu_temp_c",
@@ -65,6 +71,9 @@ CSV_FIELDS = [
     "msfs_pid",
     "msfs_working_set_gb",
     "msfs_private_memory_gb",
+    "msfs_io_read_mb_s",
+    "msfs_io_write_mb_s",
+    "msfs_io_data_mb_s",
 ]
 
 
@@ -82,13 +91,19 @@ def gb(value: float | int | None) -> float | None:
     return float(value) / (1024 ** 3)
 
 
+def mb(value: float | int | None) -> float | None:
+    if value is None:
+        return None
+    return float(value) / (1024 ** 2)
+
+
 def pct(used: float | None, total: float | None) -> float | None:
     if used is None or total in (None, 0):
         return None
     return float(used) * 100.0 / float(total)
 
 
-def round_or_none(value: Any, digits: int = 2) -> Any:
+def round_or_none(value: Any, digits: int = 3) -> Any:
     if value is None or value == "":
         return ""
     try:
@@ -111,7 +126,7 @@ def run_command(args: list[str], timeout: float = 6.0) -> tuple[int, str, str]:
         return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
     except subprocess.TimeoutExpired as exc:
         return 124, exc.stdout or "", f"timeout after {timeout}s"
-    except Exception as exc:  # defensive: monitoring must not crash the GUI
+    except Exception as exc:
         return 1, "", repr(exc)
 
 
@@ -133,19 +148,33 @@ def powershell_json(script: str, timeout: float = 8.0) -> dict[str, Any]:
 
 
 def read_windows_metrics() -> dict[str, Any]:
-    # Use PowerShell because these are authoritative Windows counters and do not
-    # require third-party Python packages. Output is JSON to avoid locale parsing.
+    # Uses Windows counters and perf-process data. JSON avoids locale parsing.
     script = r'''
 $ErrorActionPreference = 'Stop'
-$c = Get-Counter '\Memory\Committed Bytes','\Memory\Commit Limit','\Processor(_Total)\% Processor Time'
+$c = Get-Counter `
+    '\Memory\Committed Bytes', `
+    '\Memory\Commit Limit', `
+    '\Processor(_Total)\% Processor Time', `
+    '\PhysicalDisk(_Total)\Disk Read Bytes/sec', `
+    '\PhysicalDisk(_Total)\Disk Write Bytes/sec', `
+    '\PhysicalDisk(_Total)\Current Disk Queue Length', `
+    '\PhysicalDisk(_Total)\Avg. Disk sec/Read', `
+    '\PhysicalDisk(_Total)\Avg. Disk sec/Write'
 $os = Get-CimInstance Win32_OperatingSystem
 $pf = Get-CimInstance Win32_PageFileUsage -ErrorAction SilentlyContinue | Select-Object -First 1
 $msfs = Get-Process FlightSimulator -ErrorAction SilentlyContinue | Select-Object -First 1
+$perf = Get-CimInstance Win32_PerfFormattedData_PerfProc_Process -Filter "Name='FlightSimulator'" -ErrorAction SilentlyContinue | Select-Object -First 1
 $result = [ordered]@{}
 foreach ($s in $c.CounterSamples) {
-    if ($s.Path -like '*\memory\committed bytes') { $result.committed_bytes = [double]$s.CookedValue }
-    elseif ($s.Path -like '*\memory\commit limit') { $result.commit_limit_bytes = [double]$s.CookedValue }
-    elseif ($s.Path -like '*\processor(_total)\% processor time') { $result.cpu_percent = [double]$s.CookedValue }
+    $p = $s.Path.ToLowerInvariant()
+    if ($p -like '*\memory\committed bytes') { $result.committed_bytes = [double]$s.CookedValue }
+    elseif ($p -like '*\memory\commit limit') { $result.commit_limit_bytes = [double]$s.CookedValue }
+    elseif ($p -like '*\processor(_total)\% processor time') { $result.cpu_percent = [double]$s.CookedValue }
+    elseif ($p -like '*\physicaldisk(_total)\disk read bytes/sec') { $result.disk_read_bytes_per_sec = [double]$s.CookedValue }
+    elseif ($p -like '*\physicaldisk(_total)\disk write bytes/sec') { $result.disk_write_bytes_per_sec = [double]$s.CookedValue }
+    elseif ($p -like '*\physicaldisk(_total)\current disk queue length') { $result.disk_queue_length = [double]$s.CookedValue }
+    elseif ($p -like '*\physicaldisk(_total)\avg. disk sec/read') { $result.disk_avg_sec_read = [double]$s.CookedValue }
+    elseif ($p -like '*\physicaldisk(_total)\avg. disk sec/write') { $result.disk_avg_sec_write = [double]$s.CookedValue }
 }
 $result.total_visible_memory_bytes = [double]$os.TotalVisibleMemorySize * 1024
 $result.free_physical_memory_bytes = [double]$os.FreePhysicalMemory * 1024
@@ -160,6 +189,15 @@ if ($msfs) {
     $result.msfs_pid = $null
     $result.msfs_working_set_bytes = $null
     $result.msfs_private_memory_bytes = $null
+}
+if ($perf) {
+    $result.msfs_io_read_bytes_per_sec = [double]$perf.IOReadBytesPersec
+    $result.msfs_io_write_bytes_per_sec = [double]$perf.IOWriteBytesPersec
+    $result.msfs_io_data_bytes_per_sec = [double]$perf.IODataBytesPersec
+} else {
+    $result.msfs_io_read_bytes_per_sec = $null
+    $result.msfs_io_write_bytes_per_sec = $null
+    $result.msfs_io_data_bytes_per_sec = $null
 }
 $result | ConvertTo-Json -Compress
 '''
@@ -192,8 +230,6 @@ def read_nvidia_metrics() -> dict[str, Any]:
     code, out, err = run_command(args, timeout=5.0)
     if code != 0 or not out:
         return {"gpu_available": False, "gpu_error": err or out or f"nvidia-smi exited {code}"}
-    # First GPU only. CSV fields are simple but name may technically contain commas;
-    # split from the right to keep the last numeric fields stable.
     line = out.splitlines()[0].strip()
     parts = [p.strip() for p in line.rsplit(",", 5)]
     if len(parts) != 6:
@@ -238,10 +274,18 @@ def collect_sample() -> dict[str, Any]:
             "commit_limit_gb": gb(commit_limit),
             "commit_used_percent": pct(commit_used, commit_limit),
             "pagefile_gb": (float(win["pagefile_allocated_mb"]) / 1024.0) if win.get("pagefile_allocated_mb") is not None else None,
+            "disk_read_mb_s": mb(win.get("disk_read_bytes_per_sec")),
+            "disk_write_mb_s": mb(win.get("disk_write_bytes_per_sec")),
+            "disk_queue_length": win.get("disk_queue_length"),
+            "disk_avg_read_ms": (float(win["disk_avg_sec_read"]) * 1000.0) if win.get("disk_avg_sec_read") is not None else None,
+            "disk_avg_write_ms": (float(win["disk_avg_sec_write"]) * 1000.0) if win.get("disk_avg_sec_write") is not None else None,
             "msfs_running": bool(win.get("msfs_running")),
             "msfs_pid": win.get("msfs_pid"),
             "msfs_working_set_gb": gb(win.get("msfs_working_set_bytes")),
             "msfs_private_memory_gb": gb(win.get("msfs_private_memory_bytes")),
+            "msfs_io_read_mb_s": mb(win.get("msfs_io_read_bytes_per_sec")),
+            "msfs_io_write_mb_s": mb(win.get("msfs_io_write_bytes_per_sec")),
+            "msfs_io_data_mb_s": mb(win.get("msfs_io_data_bytes_per_sec")),
         })
     except Exception as exc:
         errors.append(f"Windows metrics: {exc}")
@@ -270,19 +314,19 @@ def collect_sample() -> dict[str, Any]:
 
 def warning_lines(sample: dict[str, Any]) -> list[str]:
     warnings: list[str] = []
-    commit_pct = sample.get("commit_used_percent")
-    vram_pct = sample.get("vram_used_percent")
-    gpu_temp = sample.get("gpu_temp_c")
-    ram_pct = sample.get("ram_used_percent")
+    checks = [
+        ("commit_used_percent", 85, "HIGH COMMIT", "%"),
+        ("vram_used_percent", 90, "HIGH VRAM", "%"),
+        ("gpu_temp_c", 83, "HIGH GPU TEMP", "C"),
+        ("ram_used_percent", 90, "HIGH RAM", "%"),
+        ("disk_avg_read_ms", 50, "SLOW DISK READ", "ms"),
+        ("disk_avg_write_ms", 50, "SLOW DISK WRITE", "ms"),
+    ]
     try:
-        if commit_pct not in (None, "") and float(commit_pct) >= 85:
-            warnings.append(f"HIGH COMMIT {float(commit_pct):.1f}%")
-        if vram_pct not in (None, "") and float(vram_pct) >= 90:
-            warnings.append(f"HIGH VRAM {float(vram_pct):.1f}%")
-        if gpu_temp not in (None, "") and float(gpu_temp) >= 83:
-            warnings.append(f"HIGH GPU TEMP {float(gpu_temp):.0f}C")
-        if ram_pct not in (None, "") and float(ram_pct) >= 90:
-            warnings.append(f"HIGH RAM {float(ram_pct):.1f}%")
+        for key, threshold, label, unit in checks:
+            value = sample.get(key)
+            if value not in (None, "") and float(value) >= threshold:
+                warnings.append(f"{label} {float(value):.1f}{unit}")
         if not sample.get("msfs_running"):
             warnings.append("MSFS not running")
     except Exception:
@@ -305,8 +349,8 @@ class HealthMonitorApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title(APP_TITLE)
-        self.geometry("920x620")
-        self.minsize(860, 560)
+        self.geometry("980x720")
+        self.minsize(920, 620)
         self.state_data = MonitorState()
         self.stop_event = threading.Event()
         self.worker: threading.Thread | None = None
@@ -346,19 +390,22 @@ class HealthMonitorApp(tk.Tk):
             ("RAM", "ram", "used / total / %"),
             ("Commit", "commit", "used / limit / %"),
             ("Pagefile", "pagefile_gb", "GB"),
+            ("Disk total", "disk", "read / write / queue"),
+            ("Disk latency", "disk_latency", "read ms / write ms"),
             ("GPU", "gpu", "name"),
             ("GPU util", "gpu_util_percent", "%"),
             ("VRAM", "vram", "used / total / %"),
             ("GPU temp", "gpu_temp_c", "°C"),
             ("GPU power", "gpu_power_w", "W"),
             ("MSFS", "msfs", "running / pid / memory"),
+            ("MSFS I/O", "msfs_io", "read / write / total"),
         ]
         for i, (label, key, unit) in enumerate(rows):
             ttk.Label(metrics, text=label + ":", width=14).grid(row=i // 2, column=(i % 2) * 3, sticky=tk.W, padx=(8, 2), pady=4)
             var = tk.StringVar(value="—")
             self.labels[key] = var
-            ttk.Label(metrics, textvariable=var, width=34).grid(row=i // 2, column=(i % 2) * 3 + 1, sticky=tk.W, padx=2, pady=4)
-            ttk.Label(metrics, text=unit, width=14).grid(row=i // 2, column=(i % 2) * 3 + 2, sticky=tk.W, padx=(2, 8), pady=4)
+            ttk.Label(metrics, textvariable=var, width=38).grid(row=i // 2, column=(i % 2) * 3 + 1, sticky=tk.W, padx=2, pady=4)
+            ttk.Label(metrics, text=unit, width=16).grid(row=i // 2, column=(i % 2) * 3 + 2, sticky=tk.W, padx=(2, 8), pady=4)
 
         log_frame = ttk.LabelFrame(root, text="Recent samples / messages")
         log_frame.pack(fill=tk.BOTH, expand=True)
@@ -426,6 +473,8 @@ class HealthMonitorApp(tk.Tk):
                 break
             if kind == "sample":
                 self.update_metrics(payload)
+            elif kind == "info":
+                self.append_text(f"[{now_stamp()}] {payload}")
             elif kind == "error":
                 self.append_text(f"[{now_stamp()}] ERROR: {payload}")
                 self.status_var.set("ERROR")
@@ -440,6 +489,8 @@ class HealthMonitorApp(tk.Tk):
         self.labels["ram"].set(f"{fmt(sample.get('ram_used_gb'), ' GB')} / {fmt(sample.get('ram_total_gb'), ' GB')} / {fmt(sample.get('ram_used_percent'), '%')}")
         self.labels["commit"].set(f"{fmt(sample.get('commit_used_gb'), ' GB')} / {fmt(sample.get('commit_limit_gb'), ' GB')} / {fmt(sample.get('commit_used_percent'), '%')}")
         self.labels["pagefile_gb"].set(fmt(sample.get("pagefile_gb"), " GB"))
+        self.labels["disk"].set(f"R {fmt(sample.get('disk_read_mb_s'), ' MB/s')} / W {fmt(sample.get('disk_write_mb_s'), ' MB/s')} / Q {fmt(sample.get('disk_queue_length'))}")
+        self.labels["disk_latency"].set(f"R {fmt(sample.get('disk_avg_read_ms'), ' ms')} / W {fmt(sample.get('disk_avg_write_ms'), ' ms')}")
         self.labels["gpu"].set(str(sample.get("gpu_name") or "—"))
         self.labels["gpu_util_percent"].set(fmt(sample.get("gpu_util_percent"), "%"))
         self.labels["vram"].set(f"{fmt(sample.get('vram_used_gb'), ' GB')} / {fmt(sample.get('vram_total_gb'), ' GB')} / {fmt(sample.get('vram_used_percent'), '%')}")
@@ -449,14 +500,16 @@ class HealthMonitorApp(tk.Tk):
             self.labels["msfs"].set(f"RUNNING pid={sample.get('msfs_pid')} ws={fmt(sample.get('msfs_working_set_gb'), ' GB')} private={fmt(sample.get('msfs_private_memory_gb'), ' GB')}")
         else:
             self.labels["msfs"].set("not running")
+        self.labels["msfs_io"].set(f"R {fmt(sample.get('msfs_io_read_mb_s'), ' MB/s')} / W {fmt(sample.get('msfs_io_write_mb_s'), ' MB/s')} / T {fmt(sample.get('msfs_io_data_mb_s'), ' MB/s')}")
 
         warnings = warning_lines(sample)
         self.warning_var.set("Warnings: " + ("; ".join(warnings) if warnings else "none"))
         self.append_text(
             f"[{sample.get('timestamp')}] "
-            f"CPU {fmt(sample.get('cpu_percent'), '%')} | "
             f"Commit {fmt(sample.get('commit_used_gb'), 'GB')}/{fmt(sample.get('commit_limit_gb'), 'GB')} ({fmt(sample.get('commit_used_percent'), '%')}) | "
             f"VRAM {fmt(sample.get('vram_used_gb'), 'GB')}/{fmt(sample.get('vram_total_gb'), 'GB')} ({fmt(sample.get('vram_used_percent'), '%')}) | "
+            f"MSFS IO R {fmt(sample.get('msfs_io_read_mb_s'), 'MB/s')} W {fmt(sample.get('msfs_io_write_mb_s'), 'MB/s')} | "
+            f"Disk R {fmt(sample.get('disk_read_mb_s'), 'MB/s')} W {fmt(sample.get('disk_write_mb_s'), 'MB/s')} | "
             f"GPU {fmt(sample.get('gpu_temp_c'), 'C')} | "
             f"MSFS {'ON' if sample.get('msfs_running') else 'OFF'}"
         )
@@ -489,7 +542,6 @@ def fmt(value: Any, suffix: str = "") -> str:
 
 
 def export_event_snapshot(out_path: Path, hours: int = 8) -> None:
-    # Pull recent relevant System/Application events into CSV for later analysis.
     provider_array = "@(" + ",".join([repr(p) for p in WATCH_EVENT_PROVIDERS]) + ")"
     ps_path = json.dumps(str(out_path))
     script = r'''
