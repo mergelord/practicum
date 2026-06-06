@@ -5,6 +5,7 @@ from vjoy_feeder import (
     apply_hold_filter,
     hold_threshold,
     parse_int_auto,
+    pause_axis_value,
     pov_to_vjoy_discrete,
     profile_device_ids,
 )
@@ -53,6 +54,13 @@ class VJoyFeederConfigTests(unittest.TestCase):
         self.assertEqual(apply_hold_filter("Z", 0.500, corr, state), 0.500)
         self.assertEqual(apply_hold_filter("Z", 0.510, corr, state), 0.510)
         self.assertEqual(state, {})
+
+    def test_pause_axis_value_centers_sticks_and_holds_throttle(self):
+        last = {"X": 0.45, "Z": -0.25}
+        self.assertEqual(pause_axis_value("X", {"type": "stick"}, last), 0.0)
+        self.assertEqual(pause_axis_value("R", {}, last), 0.0)
+        self.assertEqual(pause_axis_value("Z", {"type": "throttle"}, last), -0.25)
+        self.assertEqual(pause_axis_value("U", {"type": "throttle"}, last), 0.0)
 
 
 if __name__ == "__main__":

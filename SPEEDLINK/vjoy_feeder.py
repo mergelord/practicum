@@ -41,6 +41,7 @@ MAXPNAMELEN = 32
 MAX_JOYSTICKOEMVXD = 260
 
 DEFAULT_PROFILE = "joydiag_profile_final.json"
+DEFAULT_PAUSE_FILE = "vjoy_feeder.pause"
 SAMPLE_HZ = 100
 RECONNECT_SLEEP = 1.0
 
@@ -239,6 +240,19 @@ def apply_hold_filter(axis: str, value: float, correction: Mapping[str, Any] | N
     return value
 
 
+def pause_axis_value(axis: str, correction: Mapping[str, Any] | None, last_outputs: Mapping[str, float]) -> float:
+    """Return the vJoy value to send while feeder input is paused.
+
+    Safe pause centers self-centering axes, keeps throttle/slider axes at their
+    last accepted output, releases buttons, and neutralizes POV. This makes it
+    safe to move the physical stick on the desk without sending those movements
+    to the simulator.
+    """
+    if isinstance(correction, Mapping) and correction.get("type") == "throttle":
+        return float(last_outputs.get(axis, 0.0))
+    return 0.0
+
+
 def select_device(profile: Mapping[str, Any], *, joy_id: int | None = None, vid: int | None = None, pid: int | None = None) -> tuple[int, JOYCAPS]:
     """Select physical device by explicit joy id, CLI VID/PID, profile VID/PID, or single device fallback."""
     devices = enumerate_devices()
@@ -396,14 +410,16 @@ def feed_once(
     profile: Mapping[str, Any],
     runtime_centers: Mapping[str, float],
     hold_state: dict[str, float] | None = None,
-) -> None:
+) -> dict[str, float]:
     correction = profile.get("correction", {})
+    outputs: dict[str, float] = {}
     for axis in AXES:
         corr = correction.get(axis) if isinstance(correction, Mapping) else None
         raw = norm_axis(info, caps, axis)
         fixed = apply_profile_axis(raw, corr if isinstance(corr, Mapping) else None, runtime_center=runtime_centers.get(axis))
         if hold_state is not None:
             fixed = apply_hold_filter(axis, fixed, corr if isinstance(corr, Mapping) else None, hold_state)
+        outputs[axis] = fixed
         vjoy.set_axis(HID_USAGE[axis], to_vjoy(fixed))
 
     max_buttons = min(32, int(caps.wNumButtons))
@@ -411,6 +427,28 @@ def feed_once(
         vjoy.set_button(button + 1, bool(info.dwButtons & (1 << button)))
 
     vjoy.set_pov(1, pov_to_vjoy_discrete(info.dwPOV))
+    return outputs
+
+
+def feed_pause_once(vjoy: VJoyDevice, profile: Mapping[str, Any], caps: JOYCAPS | None, last_outputs: Mapping[str, float]) -> None:
+    """Send safe vJoy output while physical input is paused."""
+    correction = profile.get("correction", {})
+    for axis in AXES:
+        corr = correction.get(axis) if isinstance(correction, Mapping) else None
+        value = pause_axis_value(axis, corr if isinstance(corr, Mapping) else None, last_outputs)
+        vjoy.set_axis(HID_USAGE[axis], to_vjoy(value))
+
+    max_buttons = 32 if caps is None else min(32, int(caps.wNumButtons))
+    for button in range(max_buttons):
+        vjoy.set_button(button + 1, False)
+    vjoy.set_pov(1, -1)
+
+
+def resolve_pause_file(profile_path: Path, pause_file_arg: str | None) -> Path:
+    raw = Path(pause_file_arg or DEFAULT_PAUSE_FILE)
+    if raw.is_absolute():
+        return raw
+    return profile_path.with_name(str(raw))
 
 
 def run(args: argparse.Namespace) -> int:
@@ -427,9 +465,11 @@ def run(args: argparse.Namespace) -> int:
         print(describe_devices())
         return 0
 
+    pause_file = resolve_pause_file(profile_path, args.pause_file)
     log_path = Path(args.log) if args.log else profile_path.with_name("vjoy_feeder.log")
     log = Logger(log_path, quiet=args.quiet)
     log(f"profile: {profile_path}")
+    log(f"pause file: {pause_file}")
 
     vjoy_target = int(args.vjoy_target or profile.get("vjoy_target", 1))
     vjoy_dll = find_vjoy_dll(args.vjoy_dll)
@@ -445,11 +485,30 @@ def run(args: argparse.Namespace) -> int:
     delay = 1.0 / float(args.hz)
     runtime_centers: dict[str, float] = {}
     hold_state: dict[str, float] = {}
+    last_outputs: dict[str, float] = {}
+    paused = False
     current_id: int | None = None
     current_caps: JOYCAPS | None = None
 
     try:
         while True:
+            if pause_file.exists():
+                if not paused:
+                    paused = True
+                    log("input paused")
+                feed_pause_once(vjoy, profile, current_caps, last_outputs)
+                time.sleep(delay)
+                continue
+
+            if paused:
+                paused = False
+                log("input resumed; re-acquiring device and auto-centering")
+                runtime_centers = {}
+                hold_state = {}
+                last_outputs = {}
+                current_id = None
+                current_caps = None
+
             if current_id is None or current_caps is None or read_raw(current_id) is None:
                 try:
                     current_id, current_caps = select_device(profile, joy_id=joy_id_arg, vid=cli_vid, pid=cli_pid)
@@ -457,6 +516,7 @@ def run(args: argparse.Namespace) -> int:
                     log(f"physical device: id={current_id} {device_name(current_caps)} VID_{vid:04X}&PID_{pid:04X}")
                     runtime_centers = {}
                     hold_state = {}
+                    last_outputs = {}
                     if not args.no_autocenter:
                         runtime_centers = sample_autocenter(current_id, current_caps, profile, float(args.autocenter_secs), log)
                 except Exception as exc:
@@ -470,10 +530,11 @@ def run(args: argparse.Namespace) -> int:
                 current_id = None
                 current_caps = None
                 hold_state = {}
+                last_outputs = {}
                 time.sleep(RECONNECT_SLEEP)
                 continue
 
-            feed_once(vjoy, info, current_caps, profile, runtime_centers, hold_state)
+            last_outputs = feed_once(vjoy, info, current_caps, profile, runtime_centers, hold_state)
             time.sleep(delay)
     except KeyboardInterrupt:
         log("stopped by user")
@@ -492,6 +553,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vjoy-target", type=int, help="Override vJoy device id from profile")
     parser.add_argument("--vjoy-dll", help="Path to vJoyInterface.dll")
     parser.add_argument("--log", help="Log file path")
+    parser.add_argument("--pause-file", help="Pause flag file path, default vjoy_feeder.pause next to the profile")
     parser.add_argument("--hz", type=int, default=SAMPLE_HZ, help="Feed rate, default 100")
     parser.add_argument("--no-autocenter", action="store_true", help="Disable runtime auto-center")
     parser.add_argument("--autocenter-secs", type=float, default=1.2, help="Runtime auto-center sample length")
