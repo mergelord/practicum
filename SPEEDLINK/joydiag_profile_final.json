@@ -9,7 +9,7 @@
   "samples": 524,
   "vjoy_target": 1,
   "output_map": {
-    "X": ["X", "Rx"],
+    "X": ["X"],
     "Y": ["Y"],
     "Z": ["Z"],
     "R": [],

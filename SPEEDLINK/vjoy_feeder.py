@@ -233,12 +233,8 @@ def output_axis_map(profile: Mapping[str, Any]) -> dict[str, list[str]]:
     """Return physical-axis -> vJoy-output-axis mapping from profile.
 
     Default is identity: X->X, Y->Y, Z->Z, R->Rx, U->Ry, V->Rz.
-    A source axis can be duplicated to multiple vJoy axes, for example:
-
-        "output_map": {"X": ["X", "Rx"], "R": []}
-
-    This is useful for no-pedals flight setups where one physical X axis should
-    drive aileron, rudder, and nose-wheel steering while physical twist is ignored.
+    A source axis can be duplicated to multiple vJoy axes when needed. Keep the
+    profile mapping explicit; by default no physical axis is duplicated.
     """
     raw_map = profile.get("output_map")
     result: dict[str, list[str]] = {}

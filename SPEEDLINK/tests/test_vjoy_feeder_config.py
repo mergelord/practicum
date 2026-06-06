@@ -46,9 +46,9 @@ class VJoyFeederConfigTests(unittest.TestCase):
             },
         )
 
-    def test_output_axis_map_can_duplicate_x_to_rx_and_disable_twist(self):
-        profile = {"output_map": {"X": ["X", "Rx"], "R": [], "U": [], "V": []}}
-        self.assertEqual(output_axis_map(profile)["X"], ["X", "R"])
+    def test_output_axis_map_can_disable_twist_without_routing_x_to_rx(self):
+        profile = {"output_map": {"X": ["X"], "Y": ["Y"], "Z": ["Z"], "R": [], "U": [], "V": []}}
+        self.assertEqual(output_axis_map(profile)["X"], ["X"])
         self.assertEqual(output_axis_map(profile)["R"], [])
 
         mapped = apply_output_map(
@@ -56,7 +56,7 @@ class VJoyFeederConfigTests(unittest.TestCase):
             profile,
         )
         self.assertEqual(mapped["X"], 0.42)
-        self.assertEqual(mapped["R"], 0.42)  # vJoy Rx receives physical X.
+        self.assertEqual(mapped["R"], 0.0)  # vJoy Rx is centered, not fed by physical X.
         self.assertEqual(mapped["Y"], -0.10)
         self.assertEqual(mapped["Z"], 0.70)
         self.assertEqual(mapped["U"], 0.0)
