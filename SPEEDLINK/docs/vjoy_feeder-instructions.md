@@ -146,24 +146,11 @@ physical V -> vJoy Rz
 
 Это можно изменить в профиле через секцию `output_map`.
 
-Пример обычной identity-схемы:
+Текущая рабочая схема после отката nose wheel routing:
 
 ```json
 "output_map": {
   "X": ["X"],
-  "Y": ["Y"],
-  "Z": ["Z"],
-  "R": ["Rx"],
-  "U": ["Ry"],
-  "V": ["Rz"]
-}
-```
-
-Пример no-pedals / Fenix-схемы, где физическая X одновременно идёт в vJoy X и vJoy Rx, а физический twist/R игнорируется:
-
-```json
-"output_map": {
-  "X": ["X", "Rx"],
   "Y": ["Y"],
   "Z": ["Z"],
   "R": [],
@@ -175,22 +162,14 @@ physical V -> vJoy Rz
 В этой схеме:
 
 ```text
-physical X -> vJoy X + vJoy Rx
+physical X -> только vJoy X
+physical Y -> vJoy Y
+physical Z -> vJoy Z
 physical R/twist -> не отправляется
-vJoy Ry/Rz -> центр
+vJoy Rx/Ry/Rz -> центр
 ```
 
-Это удобно, если в MSFS/Fenix нужно повесить одну физическую X-ось сразу на:
-
-```text
-Aileron Axis             = vJoy X
-Rudder Axis              = vJoy X
-Nose Wheel Steering Axis = vJoy Rx или vJoy X
-```
-
-Если Fenix A319 упрямо цепляет `Rx` для nose wheel steering/tiller, он всё равно получит физическую X, потому что `vJoy Rx` теперь копия `vJoy X`.
-
-Важно: при такой схеме любое движение X в полёте одновременно даёт aileron и rudder. Это компромисс для сценария без педалей.
+Важно: физическая X больше не копируется в `vJoy Rx`, поэтому отдельная привязка `Nose Wheel Steering Axis = vJoy Rx` не должна использоваться для этой схемы. Если в MSFS/Fenix осталась старая привязка nose steering/tiller на `Rx`, её нужно удалить или сбросить в настройках симулятора.
 
 ## Как выбирается физическое устройство
 
@@ -250,7 +229,7 @@ Nose Wheel Steering Axis = vJoy Rx или vJoy X
 2. Открой `joy.cpl` → vJoy Device.
 3. Проверь:
    - X/Y стоят ровно в центре в покое;
-   - если включён no-pedals `output_map`, то vJoy Rx двигается вместе с X, а не с физическим twist/R;
+   - vJoy Rx стоит по центру и не двигается от физической X;
    - Z/РУД проходит весь диапазон и остаётся там, где оставлен;
    - кнопки и POV пробрасываются.
 4. Только после этого включай HidHide.
@@ -348,5 +327,4 @@ powershell -ExecutionPolicy Bypass -File .\setup_hidhide.ps1 -Off
 | `auto-center Y: rejected` | Если vJoy Y стоит ровно, это штатная защита, не ошибка. |
 | Центр всё равно уводит | Проверить Windows-калибровку, deadzone, механику стика и вибрации стола. |
 | Игра видит два устройства | Включить HidHide и оставить в игре только vJoy. |
-| После HidHide фидер потерял физический джой | Добавить в Applications именно тот Python, которым запущен фидер, особенно `pythonw.exe` для scheduled task. |
-| Fenix цепляет nose wheel steering на Rx | Включить `output_map`: `X -> [X, Rx]`, `R -> []`, затем назначить Nose Wheel Steering на vJoy Rx. |
+| Nose wheel steering тянет влево/вправо | Удалить старую привязку Nose Wheel Steering/Tiller на vJoy Rx и проверить, что `vJoy Rx` стоит по центру. |
