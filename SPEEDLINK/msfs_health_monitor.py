@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""MSFS health monitor GUI.
+"""Flight simulator health monitor GUI.
 
-Windows-only Tkinter tool for live Microsoft Flight Simulator monitoring.
+Windows-only Tkinter tool for live flight simulator monitoring.
 It tracks CPU/RAM/commit, NVIDIA GPU/VRAM/temperature, simulator process
 memory, simulator process I/O, total disk I/O, and writes CSV logs that can be
 reviewed after the flight.
 
-Supports both:
+Supports:
 - Microsoft Flight Simulator 2020: FlightSimulator.exe
 - Microsoft Flight Simulator 2024: FlightSimulator2024.exe
+- X-Plane 12: X-Plane.exe
 
 Designed for Evgen's SPEEDLINK/MSFS troubleshooting workflow. Uses only the
 Python standard library plus Windows PowerShell and NVIDIA's nvidia-smi when
@@ -32,15 +33,17 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Any
 
-APP_TITLE = "MSFS Health Monitor"
+APP_TITLE = "Flight Sim Health Monitor"
 SCRIPT_DIR = Path(__file__).resolve().parent
-LOG_DIR = SCRIPT_DIR / "msfs_health_logs"
+LOG_DIR = SCRIPT_DIR / "sim_health_logs"
 DEFAULT_INTERVAL_SEC = 2.0
 
-# Order matters: if both sims are open, prefer MSFS 2024.
+# Order matters: if several sims are open, prefer the newest/heaviest target.
+# Keep the legacy constant name for compatibility with the existing code/logs.
 MSFS_PROCESS_CANDIDATES = [
     ("FlightSimulator2024", "MSFS 2024"),
     ("FlightSimulator", "MSFS 2020"),
+    ("X-Plane", "X-Plane 12"),
 ]
 
 WATCH_EVENT_PROVIDERS = [
@@ -175,8 +178,8 @@ def powershell_json(script: str, timeout: float = 8.0) -> dict[str, Any]:
 def read_windows_metrics() -> dict[str, Any]:
     """Read Windows system metrics and simulator process metrics.
 
-    MSFS 2024 uses a different executable name than MSFS 2020. We detect both
-    known process names and then resolve PerfProc I/O counters by PID instead
+    Different simulators use different executable names. We detect known
+    MSFS/X-Plane process names and then resolve PerfProc I/O counters by PID instead
     of by process name. PID matching avoids the common PerfProc issue where
     duplicate process instances get names like FlightSimulator#1.
     """
@@ -196,7 +199,8 @@ $pf = Get-CimInstance Win32_PageFileUsage -ErrorAction SilentlyContinue | Select
 
 $msfsCandidates = @(
     [pscustomobject]@{ Name = 'FlightSimulator2024'; Display = 'MSFS 2024' },
-    [pscustomobject]@{ Name = 'FlightSimulator';     Display = 'MSFS 2020' }
+    [pscustomobject]@{ Name = 'FlightSimulator';     Display = 'MSFS 2020' },
+    [pscustomobject]@{ Name = 'X-Plane';             Display = 'X-Plane 12' }
 )
 $msfs = $null
 $msfsDisplay = $null
@@ -212,15 +216,15 @@ foreach ($candidate in $msfsCandidates) {
 }
 
 # Fallback for future/Store naming changes. Keep it narrow enough to avoid
-# unrelated processes, but broad enough for FlightSimulator2024 variants.
+# unrelated processes such as dwm.exe whose window title can be "X-Plane".
 if (-not $msfs) {
     $found = Get-Process -ErrorAction SilentlyContinue |
-        Where-Object { $_.ProcessName -match '^FlightSimulator(2024)?' } |
+        Where-Object { $_.ProcessName -match '^(FlightSimulator(2024)?|X-Plane|XPlane)$' } |
         Sort-Object StartTime -Descending -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if ($found) {
         $msfs = $found
-        if ($found.ProcessName -like '*2024*') { $msfsDisplay = 'MSFS 2024' } else { $msfsDisplay = 'MSFS' }
+        if ($found.ProcessName -like '*2024*') { $msfsDisplay = 'MSFS 2024' } elseif ($found.ProcessName -like 'X*Plane' -or $found.ProcessName -like 'XPlane') { $msfsDisplay = 'X-Plane 12' } else { $msfsDisplay = 'MSFS' }
     }
 }
 
@@ -404,7 +408,7 @@ def warning_lines(sample: dict[str, Any]) -> list[str]:
             if value not in (None, "") and float(value) >= threshold:
                 warnings.append(f"{label} {float(value):.1f}{unit}")
         if not sample.get("msfs_running"):
-            warnings.append("MSFS not running")
+            warnings.append("sim not running")
     except Exception:
         pass
     if sample.get("error"):
@@ -473,9 +477,9 @@ class HealthMonitorApp(tk.Tk):
             ("VRAM", "vram", "used / total / %"),
             ("GPU temp", "gpu_temp_c", "°C"),
             ("GPU power", "gpu_power_w", "W"),
-            ("MSFS", "msfs", "version / process / pid / memory"),
-            ("MSFS path", "msfs_path", "exe"),
-            ("MSFS I/O", "msfs_io", "read / write / total"),
+            ("Simulator", "msfs", "version / process / pid / memory"),
+            ("Sim path", "msfs_path", "exe"),
+            ("Sim I/O", "msfs_io", "read / write / total"),
         ]
         for i, (label, key, unit) in enumerate(rows):
             ttk.Label(metrics, text=label + ":", width=14).grid(row=i // 2, column=(i % 2) * 3, sticky=tk.W, padx=(8, 2), pady=4)
@@ -505,7 +509,7 @@ class HealthMonitorApp(tk.Tk):
             messagebox.showerror(APP_TITLE, "Interval must be a number, e.g. 2")
             return
         LOG_DIR.mkdir(parents=True, exist_ok=True)
-        log_path = LOG_DIR / f"msfs_health_{file_stamp()}.csv"
+        log_path = LOG_DIR / f"sim_health_{file_stamp()}.csv"
         self.state_data = MonitorState(running=True, log_path=log_path, start_time=dt.datetime.now())
         self.stop_event.clear()
         self.worker = threading.Thread(target=self._worker_loop, args=(interval, log_path), daemon=True)
@@ -583,7 +587,7 @@ class HealthMonitorApp(tk.Tk):
             )
             self.labels["msfs_path"].set(str(sample.get("msfs_path") or "—"))
         else:
-            self.labels["msfs"].set("not running")
+            self.labels["msfs"].set("sim not running")
             self.labels["msfs_path"].set("—")
         self.labels["msfs_io"].set(f"R {fmt(sample.get('msfs_io_read_mb_s'), ' MB/s')} / W {fmt(sample.get('msfs_io_write_mb_s'), ' MB/s')} / T {fmt(sample.get('msfs_io_data_mb_s'), ' MB/s')}")
 
@@ -594,7 +598,7 @@ class HealthMonitorApp(tk.Tk):
             f"[{sample.get('timestamp')}] "
             f"Commit {fmt(sample.get('commit_used_gb'), 'GB')}/{fmt(sample.get('commit_limit_gb'), 'GB')} ({fmt(sample.get('commit_used_percent'), '%')}) | "
             f"VRAM {fmt(sample.get('vram_used_gb'), 'GB')}/{fmt(sample.get('vram_total_gb'), 'GB')} ({fmt(sample.get('vram_used_percent'), '%')}) | "
-            f"MSFS IO R {fmt(sample.get('msfs_io_read_mb_s'), 'MB/s')} W {fmt(sample.get('msfs_io_write_mb_s'), 'MB/s')} | "
+            f"Sim IO R {fmt(sample.get('msfs_io_read_mb_s'), 'MB/s')} W {fmt(sample.get('msfs_io_write_mb_s'), 'MB/s')} | "
             f"Disk R {fmt(sample.get('disk_read_mb_s'), 'MB/s')} W {fmt(sample.get('disk_write_mb_s'), 'MB/s')} | "
             f"GPU {fmt(sample.get('gpu_temp_c'), 'C')} | "
             f"{version} {'ON' if sample.get('msfs_running') else 'OFF'}"
